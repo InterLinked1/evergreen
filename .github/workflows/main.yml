@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  # Triggers the workflow on push or pull request events but only for the master branch
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    container: debian:12
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+     - name: Checkout
+       uses: actions/checkout@v2
+     # Runs a set of commands using the runners shell
+     - name: Start build
+       run: |
+          echo Beginning build
+          pwd
+          ls -la
+          cd ..
+          apt-get update
+          apt-get install -y git wget automake pkg-config libtool m4 build-essential libncurses-dev
+          git clone https://github.com/InterLinked1/lbbs.git
+          cd lbbs
+          scripts/libetpan.sh
+          cd ../evergreen
+          make
+          make install

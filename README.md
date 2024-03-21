@@ -2,7 +2,7 @@
 
 *evergreen* is a terminal mail user agent (mail client) that operates *online only* (interacting with the IMAP server for all operations, as opposed to doing anything to messages offline).
 
-This overcomes the limitations of many traditional terminal mail clients, like mutt, that are fundamentally incapable of operating online-only.
+This overcomes the limitations of many traditional terminal mail clients, like `mutt`, that are fundamentally incapable of operating online-only.
 
 ## Why Another Mail Client?
 
@@ -35,7 +35,11 @@ In other words, I wanted a mail client that could be launched as a door from my 
 
 ## Building
 
-*evergreen* requires a modified version of the `libetpan` library, which can be installed using this script: https://github.com/InterLinked1/lbbs/blob/master/scripts/libetpan.sh
+*evergreen* must be compiled from source, which requires only a few simple steps.
+
+On Debian-based systems, the required packages can be installed using `apt-get install -y git wget automake pkg-config libtool m4 build-essential libncurses-dev`
+
+*evergreen* also requires a modified version of the `libetpan` library, which can be installed using this script: https://github.com/InterLinked1/lbbs/blob/master/scripts/libetpan.sh
 
 After you have that installed, you can simply run `make` and then `make install`.
 
