@@ -1,0 +1,22 @@
+# .evergreenrc
+
+# Sample config file for the Evergreen mail client
+#
+# All options can also be provided as command line arguments,
+# which will override these settings. Simply replace _ in setting names
+# with a -.
+
+# fromaddr=jsmith@example.com
+# fromname=John Smith
+# additional_identities=john@example.com,*@example.net # List of additional identities that are considered "ours"
+# imap_hostname=127.0.0.1
+# imap_port=143
+# imap_security=none # none or tls
+# imap_username=john
+# imap_password=P@ssw0rd123
+# smtp_hostname=127.0.0.1
+# smtp_port=587
+# smtp_security=none # none, starttls, or tls
+# smtp_username=john
+# smtp_password=P@ssw0rd123
+# imap_append = yes # Whether to upload copies of sent messages via IMAP upload. Default is yes.
