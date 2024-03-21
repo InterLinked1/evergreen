@@ -11,7 +11,7 @@ CFLAGS = -Wall -Werror -Wunused -Wextra -Wmaybe-uninitialized -Wstrict-prototype
 EXE		= evergreen
 RM		= rm -f
 INSTALL = install
-LIBS    = -lncurses -lmenu -lform -letpan
+LIBS    = -lncurses -lmenu -lform -L/usr/local/lib -Wl,-rpath=/usr/local/lib/ -letpan
 ETPANCFLAGS=-I/usr/local/include
 
 MAIN_SRC := $(wildcard *.c)
