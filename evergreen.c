@@ -1620,13 +1620,27 @@ resize: /* Complete redraw of folder pane, message pane, status bar */
 			}
 			break;
 		case KEY_LEFT:
-			set_focus(client, FOCUS_FOLDERS);
+			if (FOCUSED(client, FOCUS_FOLDERS)) {
+				beep();
+			} else {
+				set_focus(client, FOCUS_FOLDERS);
+			}
 			break;
 		case KEY_RIGHT:
-			client_set_status(client, "Hit ENTER to select mailbox");
-			if (client->sel_mbox) {
-				/* If already a mailbox selected, switch focus back to it */
-				set_focus(client, FOCUS_MESSAGES);
+			if (FOCUSED(client, FOCUS_FOLDERS)) {
+				ITEM *selection = current_item(client->folders.menu);
+				int selected_item = item_index(selection);
+				/* If the focused mailbox is not the selected one,
+				 * then the user might be trying to select it. */
+				if (client->sel_mbox == &client->mailboxes[selected_item]) {
+					/* If already a mailbox selected, switch focus back to it */
+					set_focus(client, FOCUS_MESSAGES);
+				} else {
+					client_set_status(client, "Hit ENTER to select mailbox");
+					beep();
+				}
+			} else {
+				beep();
 			}
 			break;
 		case KEY_ENTER:
@@ -1680,6 +1694,11 @@ viewmsg:
 				/* Selected the focused message */
 				struct message *msg;
 				int needresize;
+				if (!current_item(client->message_list.menu)) {
+					/* Mailbox must be empty */
+					beep();
+					break;
+				}
 				if (client_idle_stop(client)) {
 					return -1;
 				}
@@ -1788,8 +1807,15 @@ up:
 				set_highlighted_folder(client);
 			} else { /* FOCUS_MESSAGES */
 huntupmsg:
+				int selected_item;
 				ITEM *selection = current_item(client->message_list.menu);
-				int selected_item = item_index(selection);
+				if (!selection) {
+					client_debug(1, "No selection (mailbox must be empty)");
+					/* Status bar already says mailbox is empty */
+					beep();
+					break;
+				}
+				selected_item = item_index(selection);
 				if (FIRST_ITEM_IN_MENU_SELECTED(client, selected_item)) {
 					/* We're trying to scroll up off the top of the menu */
 					if (FIRST_ITEM_AND_ITEMS_EXIST_BEFORE_SELECTED_ITEM(client, selected_item)) {
@@ -1821,8 +1847,15 @@ down:
 				set_highlighted_folder(client);
 			} else { /* FOCUS_MESSAGES */
 huntdownmsg:
+				int selected_item;
 				ITEM *selection = current_item(client->message_list.menu);
-				int selected_item = item_index(selection);
+				if (!selection) {
+					client_debug(1, "No selection (mailbox must be empty)");
+					/* Status bar already says mailbox is empty */
+					beep();
+					break;
+				}
+				selected_item = item_index(selection);
 				if (LAST_ITEM_IN_MENU_SELECTED(client, selected_item)) {
 					/* We're trying to scroll down off the bottom of the menu */
 					if (LAST_ITEM_AND_ITEMS_EXIST_AFTER_SELECTED_ITEM(client, selected_item)) {
