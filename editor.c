@@ -618,13 +618,57 @@ static int send_message(struct client *client, FIELD *fields[NUM_FIELDS + 1], st
 			/* Save sent copy */
 			res = client_idle_stop(client);
 			if (!res) {
-				res = client_append(client, "Sent", msg, msglen);
+				res = client_append(client, SENT_MAILBOX(client), IMAP_MESSAGE_FLAG_SEEN, msg, msglen);
+				if (!res && client->sent_mbox) {
+					increment_stats_by_size(client->sent_mbox, msglen, 0);
+					increment_stats_by_size(&client->mailboxes[0], msglen, 0); /* Aggregate stats */
+				}
 			}
 		}
 	}
 
 	free(msg);
 	return res ? 1 : 0; /* Don't abort program if SMTP transaction failed, just display error and continue */
+}
+
+/*! \brief Create a message and save to Drafts */
+static int save_message(struct client *client, FIELD *fields[NUM_FIELDS + 1], struct message_constructor *msgc, struct message_data *mdata)
+{
+	size_t msglen;
+	int res = -1;
+	char *msg;
+
+	memset(msgc, 0, sizeof(struct message_constructor));
+
+	if (mdata) {
+		msgc->inreplyto = mdata->messageid; /* This is a direct reply to this message */
+		msgc->references = mdata->references;
+	}
+	msg = create_message(fields, msgc, 1, &msglen); /* Do add Bcc to RFC822 message, for Drafts */
+	msgc->inreplyto = NULL; /* We didn't allocate these, don't free them */
+	msgc->references = NULL;
+
+	if (!msg) {
+		cleanup_message_constructor(msgc);
+		return 1;
+	}
+
+	/* Saving can take a moment, update the status bar now */
+	client_set_status_nout(client, "Saving...");
+	doupdate();
+
+	/* Upload to Drafts folder */
+	if (client_idle_stop(client)) {
+		return -1;
+	}
+	res = client_append(client, DRAFTS_MAILBOX(client), IMAP_MESSAGE_FLAG_DRAFT, msg, msglen); /* Do not mark \Seen, but mark as \Draft */
+	if (!res && client->draft_mbox) {
+		increment_stats_by_size(client->draft_mbox, msglen, 1);
+		increment_stats_by_size(&client->mailboxes[0], msglen, 1); /* Aggregate stats */
+	}
+
+	free(msg);
+	return res ? 1 : 0;
 }
 
 static int addr_needs_quotes(const char *s)
@@ -1100,10 +1144,17 @@ static int choose_reply_identity(struct client *client, char **from, char *s)
 enum compose_type {
 	COMPOSE_NEW,
 	COMPOSE_REPLY,
+	COMPOSE_EDIT,
 	COMPOSE_FORWARD,
 };
 
-static int __editor(struct client *client, struct pollfd *pfds, uint32_t uid, struct message_constructor *msgcin, const char *author, struct message_data *mdata, enum compose_type comptype);
+enum editor_outcome {
+	OUTCOME_MESSAGE_DISCARDED = 0,
+	OUTCOME_MESSAGE_SENT = 1,
+	OUTCOME_MESSAGE_SAVED = 2,
+};
+
+static int __editor(struct client *client, struct pollfd *pfds, uint32_t uid, struct message_constructor *msgcin, const char *author, struct message_data *mdata, enum compose_type comptype, enum editor_outcome *restrict outcome);
 
 static int __reply(struct client *client, struct pollfd *pfds, struct message *msg, struct message_data *mdata, int replyall, enum compose_type comptype);
 
@@ -1123,6 +1174,7 @@ static int __reply(struct client *client, struct pollfd *pfds, struct message *m
 	struct message_constructor msgc;
 	int mdata_created = mdata ? 0 : 1;
 	int res;
+	enum editor_outcome outcome; /* Discarded */
 
 	if (mdata_created) {
 		enum view_message_type mtype;
@@ -1141,6 +1193,12 @@ static int __reply(struct client *client, struct pollfd *pfds, struct message *m
 
 	memset(&msgc, 0, sizeof(msgc));
 
+#define DUP_HDR_FLD(dst, src) \
+	dst = strdup(src); \
+	if (!dst) { \
+		return -1; \
+	}
+
 	if (comptype == COMPOSE_REPLY) {
 		/* Implement what I call the "email reply address algorithm".
 		 * I'm sure this is documented somewhere formally,
@@ -1157,17 +1215,11 @@ static int __reply(struct client *client, struct pollfd *pfds, struct message *m
 
 		/* If there's a Reply-To address, use that */
 		if (mdata->replyto) {
-			msgc.replyto = strdup(mdata->replyto);
-			if (!msgc.replyto) {
-				return -1;
-			}
+			DUP_HDR_FLD(msgc.replyto, mdata->replyto);
 		} else {
 			/* Reply to the sender, directly */
 			if (msg->from) {
-				msgc.to = strdup(msg->from);
-				if (!msgc.to) {
-					return -1;
-				}
+				DUP_HDR_FLD(msgc.to, msg->from);
 				/* Do not call remove_our_idents for this case.
 				 * We should be able to reply to ourself, if we're
 				 * replying to a message we sent. */
@@ -1186,10 +1238,7 @@ static int __reply(struct client *client, struct pollfd *pfds, struct message *m
 					strcpy(reallocd + origlen, mdata->to); /* Safe */
 					msgc.to = reallocd;
 				} else {
-					msgc.to = strdup(mdata->to);
-					if (!msgc.to) {
-						return -1;
-					}
+					DUP_HDR_FLD(msgc.to, mdata->to);
 				}
 				if (remove_our_idents(client, msgc.to)) {
 					client_debug(2, "Automatically removed 'To' recipients");
@@ -1197,10 +1246,7 @@ static int __reply(struct client *client, struct pollfd *pfds, struct message *m
 			}
 			/* Cc anyone that was Cc'd originally, excluding us, if any of our identities were Cc'd */
 			if (mdata->cc) {
-				msgc.cc = strdup(mdata->cc);
-				if (!msgc.cc) {
-					return -1;
-				}
+				DUP_HDR_FLD(msgc.cc, mdata->cc);
 				if (remove_our_idents(client, msgc.cc)) {
 					client_debug(2, "Automatically removed 'Cc' recipients");
 				}
@@ -1222,10 +1268,7 @@ static int __reply(struct client *client, struct pollfd *pfds, struct message *m
 		char fromaddr[384];
 		/* Default to using our default identity */
 		if (!compute_sender_identity(client, fromaddr, sizeof(fromaddr))) {
-			msgc.from = strdup(fromaddr);
-			if (!msgc.from) {
-				return -1;
-			}
+			DUP_HDR_FLD(msgc.from, fromaddr);
 		}
 	}
 
@@ -1283,10 +1326,113 @@ static int __reply(struct client *client, struct pollfd *pfds, struct message *m
 	 * but msg->from will only get used immediately when the function starts, before we process IDLE,
 	 * so it's safe */
 	/* Pass in UID if we're replying to a message that hasn't yet been replied to (for storing \Answered) */
-	res = __editor(client, pfds, msg && !(msg->flags & IMAP_MESSAGE_FLAG_ANSWERED) ? msg->uid : 0, &msgc, msg ? msg->from : NULL, mdata, comptype);
+	res = __editor(client, pfds, msg && !(msg->flags & IMAP_MESSAGE_FLAG_ANSWERED) ? msg->uid : 0, &msgc, msg ? msg->from : NULL, mdata, comptype, &outcome);
 
 	if (mdata_created) {
 		client_cleanup_message(&mdata_stack);
+	}
+	return res;
+}
+
+int edit_message(struct client *client, struct pollfd *pfds, struct message *msg)
+{
+	struct message_data mdata;
+	struct message_constructor msgc;
+	enum view_message_type mtype;
+	int res;
+	uint32_t draft_uid;
+	enum editor_outcome outcome;
+
+	memset(&msgc, 0, sizeof(msgc));
+
+	/* Edit an existing RFC822 message.
+	 * Start off with logic similar to the viewer logic */
+	memset(&mdata, 0, sizeof(mdata));
+	if (construct_message_data(client, msg, &mdata, &mtype)) {
+		return -1;
+	}
+	mtype = VIEW_MESSAGE_PT;
+	if (client_fetch_mime(&mdata, 0, 0)) {
+		if (client_fetch_mime(&mdata, 0, 1)) {
+			client_set_status_nout(client, "Can't parse plaintext/HTML components");
+			doupdate();
+			client_cleanup_message(&mdata);
+			return 0;
+		}
+		mtype = VIEW_MESSAGE_HTML;
+		convert_html_to_pt(client, &mdata);
+	}
+
+	msgc.body = mtype == VIEW_MESSAGE_HTML ? mdata.html_body : mdata.pt_body;
+	msgc.bodylen = mtype == VIEW_MESSAGE_HTML ? mdata.html_size : mdata.pt_size;
+
+	/* Since we don't fully support attachments yet, refuse to edit drafts with attachments,
+	 * since doing so would implicitly discard the attachment if saved/sent. */
+	if (mdata.num_attachments) {
+		client_set_status_nout(client, "Can't edit drafts with attachments");
+		doupdate();
+		client_cleanup_message(&mdata);
+		return 0;
+	}
+
+	/* Copy over all the addresses verbatim */
+	if (msg->from) {
+		DUP_HDR_FLD(msgc.from, msg->from);
+	}
+	if (mdata.replyto) {
+		DUP_HDR_FLD(msgc.replyto, mdata.replyto);
+	}
+	if (mdata.to) {
+		DUP_HDR_FLD(msgc.to, mdata.to);
+	}
+	if (mdata.cc) {
+		DUP_HDR_FLD(msgc.cc, mdata.cc);
+	}
+	if (mdata.bcc) { /* Any Bcc's while editing are stored in the message itself */
+		DUP_HDR_FLD(msgc.bcc, mdata.bcc);
+	}
+	if (mdata.subject) {
+		DUP_HDR_FLD(msgc.subject, mdata.subject);
+	}
+	if (!msgc.from) {
+		char fromaddr[384];
+		/* Default to using our default identity */
+		if (!compute_sender_identity(client, fromaddr, sizeof(fromaddr))) {
+			DUP_HDR_FLD(msgc.from, fromaddr);
+		}
+	}
+
+	draft_uid = msg->uid; /* Save UID beforehand, since msg won't be valid after __editor returns */
+	res = __editor(client, pfds, 0, &msgc, NULL, &mdata, COMPOSE_EDIT, &outcome);
+	if (!res && outcome != OUTCOME_MESSAGE_DISCARDED) {
+		struct message *origmsg;
+		/* If saved or sent message, delete the original draft. Otherwise keep it.
+		 * At this point, Thunderbird-based stuff will mark message as \Seen and \Deleted;
+		 * no explicit EXPUNGE. This seems pretty reasonable. */
+		client_debug(3, "Message was %s, marking original draft message %u as deleted", outcome == OUTCOME_MESSAGE_SENT ? "sent" : "saved", draft_uid);
+		if (client_idle_stop(client)) {
+			return -1;
+		}
+		origmsg = get_msg_by_uid(client, draft_uid);
+		if (!origmsg) {
+			return res;
+		}
+
+		/* Could do \Seen and \Deleted in one RTT here (using a single STORE), but
+		 * this isn't a common operation anyways. */
+		/* Mark \Seen */
+		if (origmsg && !(origmsg->flags & IMAP_MESSAGE_FLAG_SEEN)) {
+			if (client_store_seen(client, +1, origmsg)) {
+				return -1;
+			} else {
+				mark_message_seen(client->sel_mbox, origmsg);
+				client->mailboxes[0].unseen--; /* TOTAL */
+			}
+		}
+		/* Mark \Deleted */
+		if (client_store_deleted(client, origmsg)) {
+			return -1;
+		}
 	}
 	return res;
 }
@@ -1347,7 +1493,8 @@ static int parse_sender_name(char *restrict buf, size_t len, char *addr)
 
 int editor(struct client *client, struct pollfd *pfds)
 {
-	return __editor(client, pfds, 0, NULL, NULL, NULL, COMPOSE_NEW);
+	enum editor_outcome outcome;
+	return __editor(client, pfds, 0, NULL, NULL, NULL, COMPOSE_NEW, &outcome);
 }
 
 static int need_beg_line_refresh_workaround(struct client *client)
@@ -1371,9 +1518,11 @@ static int need_beg_line_refresh_workaround(struct client *client)
  * \param uid UID of message being replied to
  * \param msgcin If provded, will be used to populate the fields with data about message being replied to
  * \param author Name of whoever wrote the message to which we're replying
- * \param orig_sent Sent timestamp of message being replied
+ * \param mdata
+ * \param comptype
+ * \param[out] outcome Outcome of editing. 0 = no permanent action taken, 1 = message sent, 2 = message saved
  */
-static int __editor(struct client *client, struct pollfd *pfds, uint32_t uid, struct message_constructor *msgcin, const char *author, struct message_data *mdata, enum compose_type comptype)
+static int __editor(struct client *client, struct pollfd *pfds, uint32_t uid, struct message_constructor *msgcin, const char *author, struct message_data *mdata, enum compose_type comptype, enum editor_outcome *restrict outcome)
 {
 	int i, res = 0;
 	int overtype = 0;
@@ -1409,6 +1558,7 @@ static int __editor(struct client *client, struct pollfd *pfds, uint32_t uid, st
 
 	/* Print status before setting up the form, that way the cursor is left in the right place */
 	client_set_status_nout(client, "ESC for help");
+	*outcome = OUTCOME_MESSAGE_DISCARDED; /* Default */
 
 redraw:
 	/* Set up all header fields (not message body field) */
@@ -1564,7 +1714,7 @@ redraw:
 				}
 				form_driver(form, REQ_NEW_LINE);
 				ADD_LINE_BREAK();
-			}
+			} /* COMPOSE_EDIT is verbatim, no special logic */
 			format_and_quote_body(form, msgcin->body, comptype == COMPOSE_REPLY); /* Only quote if reply, not forward */
 		}
 
@@ -1911,10 +2061,25 @@ resize:
 			break;
 		case ctrl('o'): /* Save as draft */
 			form_driver(form, REQ_VALIDATION); /* Flush buffer */
-			/*! \todo add */
-			/* client_set_status_nout(client, "Message saved as draft"); */
-			client_set_status_nout(client, "Not implemented yet");
-			goto done;
+			res = save_message(client, fields, &msgc, mdata);
+			cleanup_message_constructor(&msgc);
+			if (res < 0) {
+				goto done;
+			} else if (res > 0) {
+				client_set_status_nout(client, msgc.error[0] ? msgc.error : "Error saving message");
+				beep();
+				if (needresize) {
+					goto resize;
+				}
+			} else {
+				*outcome = OUTCOME_MESSAGE_SAVED;
+				client_set_status_nout(client, "Message saved as draft");
+				goto done;
+			}
+			if (needresize) {
+				goto resize;
+			}
+			break;
 		case ctrl('p'):
 			break;
 		/* 2nd row */
@@ -1934,6 +2099,7 @@ resize:
 					goto resize;
 				}
 			} else {
+				*outcome = OUTCOME_MESSAGE_SENT;
 				client_set_status_nout(client, "Message sent!");
 				if (uid) {
 					if (comptype == COMPOSE_REPLY) {

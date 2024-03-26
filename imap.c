@@ -851,6 +851,8 @@ int client_select(struct client *client, struct mailbox *mbox)
 	client->sel_mbox = mbox;
 	client->trash_mbox = find_specialuse_mailbox(client, IMAP_MAILBOX_TRASH, "Trash");
 	client->junk_mbox = find_specialuse_mailbox(client, IMAP_MAILBOX_JUNK, "Junk");
+	client->sent_mbox = find_specialuse_mailbox(client, IMAP_MAILBOX_SENT, "Sent");
+	client->draft_mbox = find_specialuse_mailbox(client, IMAP_MAILBOX_DRAFTS, "Drafts");
 	return 0;
 }
 
@@ -1812,6 +1814,9 @@ static int fetch_mime_recurse(struct message_data *mdata, struct mailmime *mime,
 							case MAILIMF_FIELD_CC:
 								append_recipients(&mdata->cc, f->fld_data.fld_cc->cc_addr_list);
 								break;
+							case MAILIMF_FIELD_BCC: /* For parsing draft messages, mainly */
+								append_recipients(&mdata->bcc, f->fld_data.fld_bcc->bcc_addr_list);
+								break;
 							case MAILIMF_FIELD_SUBJECT:
 								subject = f->fld_data.fld_subject;
 								decoded = subject ? mime_header_decode(subject->sbj_value) : NULL;
@@ -2004,6 +2009,7 @@ void client_cleanup_message(struct message_data *restrict mdata)
 	free_if(mdata->subject);
 	free_if(mdata->to);
 	free_if(mdata->cc);
+	free_if(mdata->bcc);
 	free_if(mdata->replyto);
 	free_if(mdata->headersfmt);
 }
@@ -2769,14 +2775,19 @@ int client_expunge(struct client *client)
 	return mailimap_expunge(client->imap);
 }
 
-int client_append(struct client *client, const char *mailbox, const char *msg, size_t len)
+int client_append(struct client *client, const char *mailbox, int flags, const char *msg, size_t len)
 {
 	int res;
 	struct mailimap_flag_list *flag_list;
 
 	/* Automark anything we upload as \Seen */
 	flag_list = mailimap_flag_list_new_empty();
-	mailimap_flag_list_add(flag_list, mailimap_flag_new_seen());
+	if (flags & IMAP_MESSAGE_FLAG_SEEN) {
+		mailimap_flag_list_add(flag_list, mailimap_flag_new_seen());
+	}
+	if (flags & IMAP_MESSAGE_FLAG_DRAFT) {
+		mailimap_flag_list_add(flag_list, mailimap_flag_new_draft());
+	}
 
 	res = mailimap_append(client->imap, mailbox, flag_list, NULL, msg, len);
 	if (res != MAILIMAP_NO_ERROR) {

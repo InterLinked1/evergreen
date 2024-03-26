@@ -241,6 +241,8 @@ int smtp_send(struct client *client, struct message_constructor *msgc, const cha
 			SET_ERROR("No supported AUTH methods");
 			goto cleanup;
 		}
+	} else {
+		client_debug(3, "No SMTP username... assuming AUTH is not required");
 	}
 
 	if (esmtp) {

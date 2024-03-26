@@ -109,14 +109,19 @@ void mark_message_read(struct mailbox *mbox, struct message *msg)
 	mark_message_seen(mbox, msg);
 }
 
-static void increment_stats(struct mailbox *mbox, struct message *msg)
+void increment_stats_by_size(struct mailbox *mbox, size_t size, int unseen)
 {
-	mbox->size += msg->size;
+	mbox->size += size;
 	mbox->total++;
 	mbox->recent++;
-	if (!(msg->flags & IMAP_MESSAGE_FLAG_SEEN)) {
+	if (unseen) {
 		mbox->unseen++;
 	}
+}
+
+static void increment_stats(struct mailbox *mbox, struct message *msg)
+{
+	return increment_stats_by_size(mbox, msg->size, !(msg->flags & IMAP_MESSAGE_FLAG_SEEN));
 }
 
 static void decrement_stats(struct mailbox *mbox, struct message *msg)
@@ -178,7 +183,7 @@ int handle_message_op(struct client *client, struct pollfd *pfds, struct message
 				return -1;
 			}
 			mark_message_seen(client->sel_mbox, msg);
-			client->mailboxes[0].unseen--;
+			client->mailboxes[0].unseen--; /* TOTAL */
 			display_mailbox_info(client); /* Update permanent status bar before setting status, since it will clear the whole line */
 			client_set_status_nout(client, "Marked as read");
 		} else {

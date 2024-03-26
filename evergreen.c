@@ -16,6 +16,8 @@
  * IMAP
  * - RFC 2177 IDLE
  * - Stores \Answered and $Forwarded flags
+ * - Save and resume drafts
+ * - Message forwarding
  *
  * SMTP
  * - RFC 1870 SIZE declaration
@@ -39,8 +41,6 @@
  *
  * Currently missing, but soon to be added (hopefully):
  * - Honoring read receipts (configurable)
- * - Ability to save/resume drafts
- * - Message forwarding
  * - Full attachment support (upload from disk, download/view attachments, forward message with its attachments)
  *      Ability to do disk operations (upload/download) needs to be disableable by a runtime flag, for restricted environments.
  * - IMAP NOTIFY + periodically issue STATUS for all mailboxes
@@ -1684,11 +1684,21 @@ viewmsg:
 					return -1;
 				}
 				msg = get_selected_message(client);
+				/* If this is the Drafts folder, open the message for editing.
+				 * Otherwise, display the message. */
 				display_message_info(client, msg); /* In case we selected a message right after selecting a mailbox, this message's info wasn't already being shown, so show it */
-				/* view_message contains a call to doupdate(), so no need to update here */
-				SUB_MENU_PRE;
-				res = view_message(client, pfds, msg);
-				SUB_MENU_POST_DELAYRESIZE(needresize);
+				if (client->sel_mbox == client->draft_mbox) {
+					/* Open for editing */
+					SUB_MENU_PRE;
+					res = edit_message(client, pfds, msg);
+					SUB_MENU_POST;
+				} else {
+					/* Open for viewing */
+					/* view_message contains a call to doupdate(), so no need to update here */
+					SUB_MENU_PRE;
+					res = view_message(client, pfds, msg);
+					SUB_MENU_POST_DELAYRESIZE(needresize);
+				}
 				if (res == KEY_LEFT || res == KEY_RIGHT || res == KEY_SLEFT || res == KEY_SRIGHT) {
 					/* Navigate between messages.
 					 *
@@ -2089,10 +2099,17 @@ static int read_hidden_line(const char *name, char *buf, size_t len)
 	return 0;
 }
 
+static int phony_options = 0;
+
 static int process_option(struct config *config, const char *optname, const char *val)
 {
 	char key[256];
 	char *tmp;
+
+	if (phony_options) {
+		client_debug(5, "Processed option '%s'", optname);
+		return 0;
+	}
 
 	/* The config file uses option_name, while the command line options use option-name.
 	 * Convert if needed to a canonical format. */
@@ -2294,6 +2311,20 @@ static int load_config(struct config *restrict config, int argc, char *argv[])
 		}
 	}
 
+	/* Dump options for debugging, here, since log file isn't open prior to this */
+	optind = 1;
+	phony_options = 1;
+	while ((c = getopt_long(argc, argv, getopt_settings, long_options, &option_index)) != -1) {
+		switch (c) {
+		case 0:
+			process_option(config, long_options[option_index].name, optarg);
+			break;
+		default:
+			client_debug(5, "Processed option '%c'", c);
+			break;
+		}
+	}
+
 	/* If still missing stuff (not in config file or on command line), prompt for it on STDIN */
 	if (!config->imap_hostname[0] && read_line("IMAP Hostname", config->imap_hostname, sizeof(config->imap_hostname))) {
 		return -1;
@@ -2307,6 +2338,11 @@ static int load_config(struct config *restrict config, int argc, char *argv[])
 	}
 	if (!config->smtp_password[0] && read_hidden_line("SMTP Password", config->smtp_password, sizeof(config->smtp_password))) {
 		return -1;
+	}
+
+	if (!config->smtp_username[0]) {
+		/* Default to same as imap_username */
+		safe_strncpy(config->smtp_username, config->imap_username, sizeof(config->smtp_username));
 	}
 
 	return 0;

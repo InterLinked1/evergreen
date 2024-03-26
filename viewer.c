@@ -361,7 +361,7 @@ static ssize_t full_write(int fd, char *restrict buf, size_t len)
 	return written;
 }
 
-static int convert_html_to_pt(struct client *client, struct message_data *mdata)
+int convert_html_to_pt(struct client *client, struct message_data *mdata)
 {
 	ssize_t res;
 	char sizebuf[6];

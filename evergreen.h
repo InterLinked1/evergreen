@@ -233,6 +233,7 @@ struct message_data {
 	char *subject;
 	char *to;
 	char *cc;
+	char *bcc; /* Mainly for drafts */
 	char *replyto;
 	char *inreplyto;
 	char *messageid;
@@ -299,6 +300,8 @@ struct client {
 	struct mailbox *cpmv_mbox;	/*!< Mailbox to which something was last copied or moved */
 	struct mailbox *trash_mbox;	/*!< Trash mailbox for selected mailbox */
 	struct mailbox *junk_mbox;	/*!< Junk mailbox for selected mailbox */
+	struct mailbox *sent_mbox;	/*!< Sent mailbox for selected mailbox */
+	struct mailbox *draft_mbox;	/*!< Drafts mailbox for selected mailbox */
 	uint32_t start_seqno;		/*!< Sequence number of lowest message currently in memory of message pane menu	*/
 	uint32_t end_seqno;			/*!< Sequence number of highest message currently in memory of message pane menu */
 	int quota_limit;
@@ -306,6 +309,9 @@ struct client {
 	struct messages messages;
 	struct config *config;
 };
+
+#define SENT_MAILBOX(client) (client->sent_mbox ? client->sent_mbox->name : "Sent")
+#define DRAFTS_MAILBOX(client) (client->draft_mbox ? client->draft_mbox->name : "Drafts")
 
 #define SUB_MENU_PRE \
 	client->menu_depth++; \
@@ -509,11 +515,12 @@ int client_expunge(struct client *client);
  * \brief IMAP APPEND
  * \param client
  * \param mailbox Mailbox to which to append message
+ * \param flags Bitmask of IMAP_MESSAGE_FLAG_SEEN | IMAP_MESSAGE_FLAG_DRAFT
  * \param msg Message body
  * \param len Message length
- * \note Setting date and flags not currently supported by this function. Message is auto marked as \Seen and INTERNALDATE will be current time.
+ * \note Setting date and flags not currently supported by this function. INTERNALDATE will be current time.
  */
-int client_append(struct client *client, const char *mailbox, const char *msg, size_t len);
+int client_append(struct client *client, const char *mailbox, int flags, const char *msg, size_t len);
 
 /*!
  * \brief Add or remove the \Seen flag from a message.
@@ -594,6 +601,14 @@ void mark_message_seen(struct mailbox *mbox, struct message *msg);
 
 /*! \brief Mark message as seen and not recent, updating mailbox stats */
 void mark_message_read(struct mailbox *mbox, struct message *msg);
+
+/*!
+ * \brief Manually adjust stats for a mailbox by a message's size
+ * \param mbox Mailbox to which message was added
+ * \param size Size of message
+ * \param unseen Whether message is not \Seen
+ */
+void increment_stats_by_size(struct mailbox *mbox, size_t size, int unseen);
 
 /*!
  * \brief Handle a general message operation
@@ -678,6 +693,9 @@ enum view_message_type {
 	VIEW_MESSAGE_EMPTY = 3,
 };
 
+/*! \brief Convert HTML message body to plaintext representation */
+int convert_html_to_pt(struct client *client, struct message_data *mdata);
+
 /*! \brief Construct a message_data from a message */
 int construct_message_data(struct client *client, struct message *msg, struct message_data *restrict mdata, enum view_message_type *restrict mtype);
 
@@ -691,6 +709,9 @@ int reply(struct client *client, struct pollfd *pfds, struct message *msg, struc
 
 /*! \brief Forward a message */
 int forward(struct client *client, struct pollfd *pfds, struct message *msg, struct message_data *mdata);
+
+/*! \brief Edit an existing message */
+int edit_message(struct client *client, struct pollfd *pfds, struct message *msg);
 
 /*! \brief Compose a new message */
 int editor(struct client *client, struct pollfd *pfds);
