@@ -468,10 +468,258 @@ static int mailbox_attr_from_string(const char *s)
 	}
 }
 
+struct mailbox_ref {
+	const char *name;
+	struct mailimap_mailbox_list *mb_list;
+	int flags;
+	char data[];
+};
+
+#define STR_STARTS_WITH_CASE(s, str) !strncasecmp(s, str, STRLEN(str))
+#define STR_ENDS_WITH_CASE(s, str) !strcasecmp(s + strlen(s) - STRLEN(str), str)
+
+static int mailbox_name_score(struct mailbox_ref *r)
+{
+	/* Done this way so that the smaller the value, the earlier it sorts */
+	if (!strcasecmp(r->name, "INBOX")) {
+		return -10 + 1;
+	}
+	/* It can end with INBOX too, the mailbox might not be named that exactly */
+	if (STR_ENDS_WITH_CASE(r->name, "INBOX")) {
+		return -10 + 1;
+	}
+
+	if (r->flags & IMAP_MAILBOX_DRAFTS) {
+		return -10 + 2;
+	} else if (r->flags & IMAP_MAILBOX_SENT) {
+		return -10 + 3;
+	/* Archives */
+	} else if (r->flags & IMAP_MAILBOX_JUNK) {
+		return -10 + 5;
+	} else if (r->flags & IMAP_MAILBOX_TRASH) {
+		return -10 + 6;
+	}
+
+	return 0;
+}
+
+static int namespace_score(struct mailbox_ref *r)
+{
+	/* Other namespaces sort last */
+	/* XXX Should use LIST to determine what the other/shared namespace prefixes actually are */
+	if (STR_STARTS_WITH_CASE(r->name, "Other Users")) {
+		return 1;
+	} else if (STR_STARTS_WITH_CASE(r->name, "Shared Folders")) {
+		return 2;
+	} else {
+		return 0;
+	}
+}
+
+static int mkparent(struct client *client, char *restrict buf, size_t len, const char *child)
+{
+	char *tmp;
+	safe_strncpy(buf, child, len);
+	tmp = strrchr(buf, client->delimiter);
+	if (tmp) {
+		*tmp = '\0';
+		return 1;
+	}
+	return 0;
+}
+
+static inline int mbox_name_cmp(const char *a, const char *b)
+{
+	/*! \todo Make [ sort before alphabetic characters, for things like [Gmail] where that makes sense */
+	return strcmp(a, b);
+}
+
+static int __mailbox_name_cmp(struct client *client, struct mailbox_ref *a, struct mailbox_ref *b, int cmp_attrs)
+{
+	int res = 0;
+	int ns_a, ns_b;
+	int score_a, score_b;
+	int has_parent_a, has_parent_b;
+	char parent_a[512], parent_b[512];
+
+	ns_a = namespace_score(a);
+	ns_b = namespace_score(b);
+	if (ns_a < ns_b) {
+		res = -1;
+	} else if (ns_b < ns_a) {
+		res = 1;
+	}
+
+	/* If one folder is a prefix of the other,
+	 * then it is its parent */
+	if (!strncmp(a->name, b->name, strlen(a->name))) {
+		/* b starts with a */
+		res = -1;
+	} else if (!strncmp(a->name, b->name, strlen(b->name))) {
+		/* a starts with b */
+		res = 1;
+	}
+
+	has_parent_a = mkparent(client, parent_a, sizeof(parent_a), a->name);
+	has_parent_b = mkparent(client, parent_b, sizeof(parent_b), b->name);
+
+	/* Only compare attributes if the folders are siblings */
+	if (has_parent_a == has_parent_b && (!has_parent_a || !strcmp(parent_a, parent_b))) {
+		score_a = mailbox_name_score(a);
+		score_b = mailbox_name_score(b);
+		if (!res && cmp_attrs) {
+			if (score_a < score_b) {
+				res = -1;
+			} else if (score_b < score_a) {
+				res = 1;
+			}
+		}
+	}
+
+	if (!res) {
+		res = mbox_name_cmp(a->name, b->name);
+	}
+
+	return res;
+}
+
+static int mailbox_name_cmp(const void *arg1, const void *arg2, void *varg)
+{
+	struct mailbox_ref *const *ap = arg1;
+	struct mailbox_ref *const *bp = arg2;
+	struct mailbox_ref *a = *ap, *b = *bp;
+	struct client *client = varg;
+
+	return __mailbox_name_cmp(client, a, b, 1);
+}
+
+static inline int mailbox_has_direct_parent(struct mailbox_ref **restrict mb_names, const char *restrict mb, int num_mailboxes, char delim, char *restrict parent, size_t parentlen)
+{
+	int i;
+	char *end;
+
+	safe_strncpy(parent, mb, parentlen);
+	end = strrchr(parent, delim);
+	if (!end) {
+		/* This mailbox is at the top level (doesn't have a parent).
+		 * For the purposes of what we care about, pretend it has
+		 * a parent already since it's good to go */
+		return 1;
+	}
+
+	*end = '\0';
+
+	for (i = 0; i < num_mailboxes; i++) {
+		if (!strcmp(mb_names[i]->name, parent)) {
+			return 1;
+		}
+	}
+
+	/* Not at top-level and doesn't have a direct ancestor */
+	return 0;
+}
+
+/*! \brief Create a list of all mailboxes, properly sorted, with flags */
+static struct mailbox_ref **populate_mailboxes(struct client *client, clist *imap_list)
+{
+	int i;
+	clistiter *cur;
+	struct mailbox_ref **mb_names;
+
+	/* While we could just iterate over the list and add these to client->mailboxes
+	 * in the order the mailboxes were listed by the server, this is a bad idea.
+	 * The mailboxes could be provided in any order; there is no guarantee as to ordering.
+	 * To present folders in a sane order, we first sort all of the folders,
+	 * then adjust based on SPECIAL-USE mailboxes, and then use that order. */
+	mb_names = malloc(sizeof(struct mailbox_ref*) * clist_count(imap_list));
+	if (!mb_names) {
+		mailimap_list_result_free(imap_list);
+		return NULL;
+	}
+	client->num_mailboxes = 0;
+	for (i = 0, cur = clist_begin(imap_list); cur; i++, cur = clist_next(cur)) {
+		struct mailimap_mailbox_list *mb_list = clist_content(cur);
+		const char *name = mb_list->mb_name;
+		struct mailimap_mbx_list_flags *flags = mb_list->mb_flag;
+
+		mb_names[i] = malloc(sizeof(struct mailbox_ref) + strlen(name) + 1);
+		if (!mb_names[i]) {
+			mailimap_list_result_free(imap_list);
+			/* Leaks mb_names and its individual strings, but we're exiting anyways */
+			return NULL;
+		}
+		strcpy(mb_names[i]->data, name); /* Safe */
+		mb_names[i]->name = mb_names[i]->data;
+		mb_names[i]->mb_list = mb_list;
+		mb_names[i]->flags = 0;
+		client->num_mailboxes++;
+		/* Determine the hierarchy delimiter (should be same for all). */
+		client->delimiter = mb_list->mb_delimiter;
+		if (flags) {
+			clistiter *cur2;
+			if (flags->mbf_type == MAILIMAP_MBX_LIST_FLAGS_SFLAG) {
+				switch (flags->mbf_sflag) {
+					case MAILIMAP_MBX_LIST_SFLAG_MARKED:
+						mb_names[i]->flags |= IMAP_MAILBOX_MARKED;
+						break;
+					case MAILIMAP_MBX_LIST_SFLAG_UNMARKED:
+						break;
+					case MAILIMAP_MBX_LIST_SFLAG_NOSELECT:
+						mb_names[i]->flags |= IMAP_MAILBOX_NOSELECT;
+						break;
+				}
+			}
+			for (cur2 = clist_begin(flags->mbf_oflags); cur2; cur2 = clist_next(cur2)) {
+				struct mailimap_mbx_list_oflag *oflag = clist_content(cur2);
+				switch (oflag->of_type) {
+					case MAILIMAP_MBX_LIST_OFLAG_NOINFERIORS:
+						break;
+					case MAILIMAP_MBX_LIST_OFLAG_FLAG_EXT:
+						/* These don't include any backslashes, so don't in the other ones above either: */
+						mb_names[i]->flags |= mailbox_attr_from_string(oflag->of_flag_ext);
+						break;
+				}
+			}
+		}
+	}
+
+	/* The RFC does not state servers must include \NonExistent mailboxes
+	 * for folders with no ancestors, so autocreate dummy mailboxes if needed.
+	 * Use client->num_mailboxes as loop invariant since we need to also
+	 * check anything we add during the loop. */
+	for (i = 0; i < client->num_mailboxes; i++) {
+		char parent[1024]; /* No mailbox name is going to be longer than this... */
+		struct mailbox_ref **new_mb_names;
+		if (mailbox_has_direct_parent(mb_names, mb_names[i]->name, client->num_mailboxes, client->delimiter, parent, sizeof(parent))) {
+			continue;
+		}
+		client_debug(3, "Mailbox '%s' does not have a direct parent, autocreating '%s'", mb_names[i]->name, parent);
+		new_mb_names = realloc(mb_names, sizeof(struct mailbox_ref *) * (client->num_mailboxes + 1));
+		if (!new_mb_names) {
+			client_error("realloc failed");
+			return NULL;
+		}
+		mb_names = new_mb_names;
+		mb_names[client->num_mailboxes] = malloc(sizeof(struct mailbox_ref) + strlen(parent) + 1);
+		if (!mb_names[client->num_mailboxes]) {
+			return NULL;
+		}
+		strcpy(mb_names[client->num_mailboxes]->data, parent); /* Safe */
+		mb_names[client->num_mailboxes]->name = mb_names[client->num_mailboxes]->data;
+		mb_names[client->num_mailboxes]->mb_list = NULL;
+		mb_names[client->num_mailboxes]->flags = IMAP_MAILBOX_NONEXISTENT;
+		client->num_mailboxes++;
+	}
+
+	qsort_r(mb_names, client->num_mailboxes, sizeof(struct mailbox_ref *), mailbox_name_cmp, client);
+
+	/* mb_names is now sorted */
+	return mb_names;
+}
+
 static int __client_list(struct client *client)
 {
 	clist *imap_list;
-	clistiter *cur;
 	int res, i;
 	int needunselect = 0;
 	/* This is a single-threaded application, so there is no concurrency risk to making this static/global,
@@ -510,103 +758,104 @@ static int __client_list(struct client *client)
 	}
 
 	if (!client->mailboxes) {
+		struct mailbox_ref **mb_names = populate_mailboxes(client, imap_list);
+		if (!mb_names) {
+			return -1;
+		}
+
 		/* This does mean we won't see new mailboxes created at runtime */
-		client->num_mailboxes = clist_count(imap_list) + 1; /* Plus one for aggregate stats */
+		client->num_mailboxes++; /* Plus one for aggregate stats */
 		client->mailboxes = calloc(client->num_mailboxes, sizeof(struct mailbox));
 		if (!client->mailboxes) {
 			mailimap_list_result_free(imap_list);
 			return -1;
 		}
-	}
 
-	i = 0;
-	client->mailboxes[i].name = strdup("ALL");
-	client->mailboxes[i].flags |= IMAP_MAILBOX_NOSELECT; /* Not a real mailbox! */
+		i = 0;
+		client->mailboxes[i].name = strdup("ALL");
+		client->mailboxes[i].flags |= IMAP_MAILBOX_NOSELECT; /* Not a real mailbox! */
 
-	for (i = 1, cur = clist_begin(imap_list); cur; i++, cur = clist_next(cur)) {
-		struct mailimap_mailbox_list *mb_list = clist_content(cur);
-		struct mailimap_mbx_list_flags *flags = mb_list->mb_flag;
-		const char *name = mb_list->mb_name;
+		/* Now, add items in the order they appear in mb_names */
+		for (i = 1; i < client->num_mailboxes; i++) {
+			const char *name;
+			/* Use i-1 for indexing mb_names but i for indexing client->mailboxes */
+			struct mailimap_mailbox_list *mb_list = mb_names[i - 1]->mb_list;
 
-		client->delimiter = mb_list->mb_delimiter;
-		client->mailboxes[i].name = strdup(name);
-		if (flags) {
-			clistiter *cur2;
-			if (flags->mbf_type == MAILIMAP_MBX_LIST_FLAGS_SFLAG) {
-				switch (flags->mbf_sflag) {
-					case MAILIMAP_MBX_LIST_SFLAG_MARKED:
-						client->mailboxes[i].flags |= IMAP_MAILBOX_MARKED;
-						break;
-					case MAILIMAP_MBX_LIST_SFLAG_UNMARKED:
-						break;
-					case MAILIMAP_MBX_LIST_SFLAG_NOSELECT:
-						client->mailboxes[i].flags |= IMAP_MAILBOX_NOSELECT;
-						break;
+			client->mailboxes[i].flags = mb_names[i - 1]->flags;
+			if (!mb_list) {
+				/* If we can't find it, it's a \NonExistent mailbox we just created. */
+				client->mailboxes[i].name = strdup(mb_names[i - 1]->name);
+				if (!client->mailboxes[i].name) {
+					return -1; /* Leaks but exiting */
 				}
+				continue;
 			}
-			for (cur2 = clist_begin(flags->mbf_oflags); cur2; cur2 = clist_next(cur2)) {
-				struct mailimap_mbx_list_oflag *oflag = clist_content(cur2);
-				switch (oflag->of_type) {
-					case MAILIMAP_MBX_LIST_OFLAG_NOINFERIORS:
-						break;
-					case MAILIMAP_MBX_LIST_OFLAG_FLAG_EXT:
-						/* These don't include any backslashes, so don't in the other ones above either: */
-						client->mailboxes[i].flags |= mailbox_attr_from_string(oflag->of_flag_ext);
-						break;
-				}
+
+			name = mb_list->mb_name;
+			client->delimiter = mb_list->mb_delimiter;
+			client->mailboxes[i].name = strdup(name);
+
+			if (client->mailboxes[i].flags & IMAP_MAILBOX_NOSELECT) {
+				continue;
 			}
-		}
 
-		/* STATUS: ideally we could get all the details we want from a single STATUS command. */
-		if (!client_status_command(client, &client->mailboxes[i], list_status_buf)) {
-			if (!IMAP_HAS_CAPABILITY(client, IMAP_CAPABILITY_STATUS_SIZE)) { /* Lacks RFC 8438 support */
-				uint32_t size = 0;
-				if (client->mailboxes[i].total > 0) {
-					/* Do it the manual way. */
-					struct mailimap_fetch_type *fetch_type;
-					struct mailimap_fetch_att *fetch_att;
-					clist *fetch_result;
-					struct mailimap_set *set = mailimap_set_new_interval(1, 0); /* fetch in interval 1:* */
+			/* STATUS: ideally we could get all the details we want from a single STATUS command. */
+			if (!client_status_command(client, &client->mailboxes[i], list_status_buf)) {
+				if (!IMAP_HAS_CAPABILITY(client, IMAP_CAPABILITY_STATUS_SIZE)) { /* Lacks RFC 8438 support */
+					uint32_t size = 0;
+					if (client->mailboxes[i].total > 0) {
+						/* Do it the manual way. */
+						struct mailimap_fetch_type *fetch_type;
+						struct mailimap_fetch_att *fetch_att;
+						clist *fetch_result;
+						struct mailimap_set *set = mailimap_set_new_interval(1, 0); /* fetch in interval 1:* */
 
-					client_status("Calculating size of %s", name);
-					/* Must EXAMINE mailbox */
-					res = mailimap_examine(client->imap, name);
-					if (res != MAILIMAP_NO_ERROR) {
-						client_error("Failed to EXAMINE mailbox '%s'", name);
-					} else {
-						fetch_type = mailimap_fetch_type_new_fetch_att_list_empty();
-						fetch_att = mailimap_fetch_att_new_rfc822_size();
-						mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
-						res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
+						client_status("Calculating size of %s", name);
+						/* Must EXAMINE mailbox */
+						res = mailimap_examine(client->imap, name);
 						if (res != MAILIMAP_NO_ERROR) {
-							client_error("Failed to calculate size of mailbox %s: %s", name, maildriver_strerror(res));
+							client_error("Failed to EXAMINE mailbox '%s'", name);
 						} else {
-							clistiter *cur2;
-							/* Iterate over each message size */
-							for (cur2 = clist_begin(fetch_result); cur2; cur2 = clist_next(cur2)) {
-								struct mailimap_msg_att *msg_att = clist_content(cur2);
-								size += fetch_size(msg_att);
+							fetch_type = mailimap_fetch_type_new_fetch_att_list_empty();
+							fetch_att = mailimap_fetch_att_new_rfc822_size();
+							mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
+							res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
+							if (res != MAILIMAP_NO_ERROR) {
+								client_error("Failed to calculate size of mailbox %s: %s", name, maildriver_strerror(res));
+							} else {
+								clistiter *cur2;
+								/* Iterate over each message size */
+								for (cur2 = clist_begin(fetch_result); cur2; cur2 = clist_next(cur2)) {
+									struct mailimap_msg_att *msg_att = clist_content(cur2);
+									size += fetch_size(msg_att);
+								}
+								mailimap_fetch_list_free(fetch_result);
+								mailimap_fetch_type_free(fetch_type);
 							}
-							mailimap_fetch_list_free(fetch_result);
-							mailimap_fetch_type_free(fetch_type);
+							/* UNSELECT the mailbox, since we weren't supposed to do this.
+							 * XXX If a mailbox was previously selected, after we're done with all this,
+							 * reselect that one. */
+							needunselect = 1;
 						}
-						/* UNSELECT the mailbox, since we weren't supposed to do this.
-						 * XXX If a mailbox was previously selected, after we're done with all this,
-						 * reselect that one. */
-						needunselect = 1;
+						mailimap_set_free(set);
 					}
-					mailimap_set_free(set);
+					client->mailboxes[i].size = size;
+					client->mailboxes[i].uidvalidity = client->imap->imap_selection_info->sel_uidvalidity;
+					client->mailboxes[i].uidnext = client->imap->imap_selection_info->sel_uidnext;
 				}
-				client->mailboxes[i].size = size;
-				client->mailboxes[i].uidvalidity = client->imap->imap_selection_info->sel_uidvalidity;
-				client->mailboxes[i].uidnext = client->imap->imap_selection_info->sel_uidnext;
 			}
+			/* Update aggregate stats for all mailboxes */
+			client->mailboxes[0].total += client->mailboxes[i].total;
+			client->mailboxes[0].unseen += client->mailboxes[i].unseen;
+			client->mailboxes[0].recent += client->mailboxes[i].recent;
+			client->mailboxes[0].size += client->mailboxes[i].size;
 		}
-		/* Update aggregate stats for all mailboxes */
-		client->mailboxes[0].total += client->mailboxes[i].total;
-		client->mailboxes[0].unseen += client->mailboxes[i].unseen;
-		client->mailboxes[0].recent += client->mailboxes[i].recent;
-		client->mailboxes[0].size += client->mailboxes[i].size;
+
+		/* Free list of mailboxes used for sorting */
+		for (i = 0; i < client->num_mailboxes - 1; i++) {
+			free(mb_names[i]);
+		}
+		free(mb_names);
 	}
 
 	if (needunselect) {

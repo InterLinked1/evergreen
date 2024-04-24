@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include <assert.h>
 
 static inline int set_display_name(struct client *client, struct mailbox *mbox)
@@ -58,9 +59,9 @@ static inline int set_display_name(struct client *client, struct mailbox *mbox)
 	}
 
 	if (mbox->unseen) {
-		snprintf(buf, sizeof(buf), "%s%.*s%s (%d)", mbox->flags & IMAP_MAILBOX_MARKED ? "*" : "", hierarchy, SPACES, leafname, mbox->unseen);
+		snprintf(buf, sizeof(buf), "%s%.*s%s (%d)", mbox->flags & IMAP_MAILBOX_MARKED ? "*" : " ", hierarchy, SPACES, leafname, mbox->unseen);
 	} else {
-		snprintf(buf, sizeof(buf), "%.*s%s", hierarchy, SPACES, leafname);
+		snprintf(buf, sizeof(buf), "%s%.*s%s", " ", hierarchy, SPACES, leafname);
 	}
 
 	if (mbox->size == 0) {
@@ -327,6 +328,17 @@ static inline int fmt_msg(struct message *msg, time_t now, int maxseqlen, int ma
 	return res < 0 ? -1 : 0;
 }
 
+/*! \brief Strip characters that curses will not print in a menu title, such as Unicode */
+static void sanitize_for_curses(char *s)
+{
+	while (*s) {
+		if (!isprint(*s) || *s >= 128) {
+			*s = '?';
+		}
+		s++;
+	}
+}
+
 int create_message_items(struct client *client)
 {
 	int i;
@@ -358,6 +370,7 @@ int create_message_items(struct client *client)
 		if (fmt_msg(msg, now, maxseqlen, maxuidlen)) {
 			return -1;
 		}
+		sanitize_for_curses(msg->display);
 		client->message_list.items[i] = new_item(msg->display, "");
 		if (!client->message_list.items[i]) {
 			client_error("Failed to create item %d: %s", i, msg->display);

@@ -1939,7 +1939,7 @@ huntdownmsg:
 			break;
 		case KEY_END:
 			if (FOCUSED(client, FOCUS_FOLDERS)) {
-				set_current_item(client->folders.menu, client->folders.items[client->folders.n]);
+				set_current_item(client->folders.menu, client->folders.items[client->folders.n - 1]);
 				set_highlighted_folder(client);
 			} else { /* FOCUS_MESSAGES */
 				if (LAST_MESSAGE_IN_CURRENT_MENU(client)) {
