@@ -152,6 +152,9 @@ void delete_message(struct client *client, struct message *msg)
 	free_message(client, msg);
 }
 
+/* XXX For messages like move, when called from viewer (as opposed to message list),
+ * the number of messages is changed after we return, which clears the status pane,
+ * so the status update is essentially lost. */
 int handle_message_op(struct client *client, struct pollfd *pfds, struct message *msg, struct message_data *mdata, int c)
 {
 	int res, cur;
@@ -326,7 +329,7 @@ int handle_message_op(struct client *client, struct pollfd *pfds, struct message
 	}
 
 	/* Success, but redraw since stuff changed.
-	 * In all cases, both the message and folder panes have chaned. */
+	 * In all cases, both the message and folder panes have changed. */
 	return 2;
 }
 

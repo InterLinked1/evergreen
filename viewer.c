@@ -197,6 +197,12 @@ static int pad_add(WINDOW *pad, const char *restrict data, size_t len, int flags
 	/* We can't output carriage returns to the screen */
 	for (; i < len; i++, c++, outputcol++, col++) {
 		getyx(pad, y, x);
+		if (*c == 0) {
+			/* NUL character???
+			 * Shouldn't happen, but if it does, message is over */
+			client_debug(1, "WARNING: Parsed NUL character in message output?");
+			break;
+		}
 		if (x != outputcol) {
 			client_debug(1, "WARNING! outputcol is %d, but actually at row %d, col %d? (char %d: '%c')", outputcol, y, x, *c, isprint(*c) ? *c : ' ');
 			if (x <= 127) {

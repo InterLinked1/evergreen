@@ -180,6 +180,34 @@ void cleanup_folder_menu(struct client *client)
 	}
 }
 
+#include "anyascii.h"
+#include "utf8.h"
+
+static char ascii[4096];
+
+static void anyascii_string(const char *in, char *out)
+{
+	uint32_t utf32;
+	uint32_t state = 0;
+	const char *r;
+	size_t rlen;
+
+	for (; *in; in++) {
+		utf8_decode(&state, &utf32, (unsigned char) *in);
+		switch (state) {
+		case UTF8_ACCEPT:;
+			rlen = anyascii(utf32, &r);
+			memcpy(out, r, rlen);
+			out += rlen;
+			break;
+		case UTF8_REJECT:
+			state = UTF8_ACCEPT;
+			break;
+		}
+	}
+	*out = 0;
+}
+
 static inline void format_subject(char *restrict buf, size_t len, int width, const char *s)
 {
 	if (!s) {
@@ -189,7 +217,8 @@ static inline void format_subject(char *restrict buf, size_t len, int width, con
 	if (!strncasecmp(s, "Re: ", 4)) {
 		s += 4;
 	}
-	safe_strncpy(buf, s, len);
+	anyascii_string(s, ascii);
+	safe_strncpy(buf, ascii, len);
 	if (strlen(buf) > (size_t) width) {
 		buf[width - 1] = '.';
 		buf[width - 2] = '.';
