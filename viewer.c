@@ -136,6 +136,8 @@ static int pager_add(struct pager *restrict pager, const char *restrict data, si
 					c++;
 					i++;
 				}
+				c--;
+				i--;
 				outputcol--; /* We didn't actually draw the newline, and the loop post will increment again */
 			} else {
 				outputcol = -1;
@@ -162,6 +164,9 @@ static int pager_add(struct pager *restrict pager, const char *restrict data, si
 						continue;
 					} else {
 						in_quotes = 0;
+						if (*c != ' ') {
+							outputcol++;
+						}
 					}
 				}
 				if (*c == '\t') {
@@ -185,6 +190,7 @@ static int pad_add(WINDOW *pad, const char *restrict data, size_t len, int flags
 	int outputcol; /* Visual output column on display */
 	int j;
 	int in_quotes = 0, quote_depth = 0;
+	int was_unicode = 0;
 
 	outputcol = 0;
 	c = data;
@@ -199,18 +205,30 @@ static int pad_add(WINDOW *pad, const char *restrict data, size_t len, int flags
 		getyx(pad, y, x);
 		if (*c == 0) {
 			/* NUL character???
-			 * Shouldn't happen, but if it does, message is over */
+			 * Shouldn't happen, if length was calculated correctly, but if it does, message is over */
 			client_debug(1, "WARNING: Parsed NUL character in message output?");
 			break;
 		}
 		if (x != outputcol) {
 			client_debug(1, "WARNING! outputcol is %d, but actually at row %d, col %d? (char %d: '%c')", outputcol, y, x, *c, isprint(*c) ? *c : ' ');
-			if (x <= 127) {
-				assert(x <= outputcol);
+			if (*c <= 127) {
+				if (was_unicode) {
+					/* If the last character was a Unicode character, that may have occupied multiple columns, causing a following non-Unicode character
+					 * to be misaligned, in which case we also have to adjust to that. */
+					outputcol = x;
+				} else {
+					assert(x <= outputcol);
+				}
+				was_unicode = 0;
 			} else if (x > outputcol) {
 				/* Still a bug, but some Unicode characters make take up more than 1 column, and hard to do anything about that... just autocorrect. */
 				outputcol = x;
+				was_unicode = 1;
+			} else {
+				was_unicode = 0;
 			}
+		} else {
+			was_unicode = 0;
 		}
 		if (*c == '\r') {
 			outputcol--; /* We're not drawing anything, and loop post will increment again */
@@ -224,9 +242,15 @@ static int pad_add(WINDOW *pad, const char *restrict data, size_t len, int flags
 				c++;
 				i++;
 				while (*c && *c == '>') {
+					client_debug(9, "After skipping chars, we're now at '%c'\n", *c);
 					c++;
 					i++;
 				}
+				/* Some mail clients, like Eudora, don't include a space between quotes and the content, so we need to be very
+				 * careful not to omit the first character or we'll lose the first letter of every wrapped line.
+				 * Since the loop post increments c and i, back em up here. */
+				c--;
+				i--;
 				outputcol--; /* We didn't actually draw the newline, and the loop post will increment again */
 			} else {
 				waddch(pad, *c);
@@ -268,6 +292,12 @@ static int pad_add(WINDOW *pad, const char *restrict data, size_t len, int flags
 					} else {
 						client_debug(9, "Replaced %d quotes with quotes", quote_depth);
 						in_quotes = 0;
+						if (*c != ' ') {
+							/* If there isn't a space between the last quote and the first character,
+							 * add one for readability. */
+							waddch(pad, ' ');
+							outputcol++;
+						}
 					}
 				}
 				if (*c == '\t') {
