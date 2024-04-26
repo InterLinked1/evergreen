@@ -922,11 +922,14 @@ int show_help_menu(struct client *client, struct pollfd *pfds, enum help_types h
 		items[i++] = new_item("e", "Empty trash");
 		items[i++] = new_item("E", "Expunge mailbox");
 
-		items[i++] = new_item("UP", "Select previous message");
-		items[i++] = new_item("DOWN", "Select next message");
+		items[i++] = new_item("UP/L", "Select previous message");
+		items[i++] = new_item("DN/R", "Select next message");
 
-		items[i++] = new_item(" +SHIFT", "Select previous unread msg");
-		items[i++] = new_item(" +SHIFT", "Select next unread msg");
+		items[i++] = new_item(" +SHIFT", "Select previous unread msg*");
+		items[i++] = new_item(" +SHIFT", "Select next unread msg*");
+
+		items[i++] = new_item("  +CTRL", "Jump prev folder with unread");
+		items[i++] = new_item("  +CTRL", "Jump next folder with unread");
 
 		items[i++] = new_item(",", "Jump to msg by seqno");
 		items[i++] = new_item(".", "Jump to msg by UID");
@@ -998,6 +1001,11 @@ int show_help_menu(struct client *client, struct pollfd *pfds, enum help_types h
 
 		items[i++] = new_item("^L", "Clear entire field");
 		EMPTY_HELP_ITEM;
+	}
+
+	/* "Footnotes" */
+	if (help_types & HELP_MAIN) {
+		items[i++] = new_item(" ", "*Marked mailbox, for folder pane");
 	}
 
 	assert(i < MAX_HELP_ITEMS);
@@ -1380,16 +1388,20 @@ static void set_highlighted_folder(struct client *client)
  * This allows the mail client to remain fairly responsive most of the time,
  * while keeping startup time and overall memory usage low. */
 #define FIRST_ITEM_IN_MENU_SELECTED(client, selected_item) (selected_item == 0)
-#define LAST_ITEM_IN_MENU_SELECTED(client, selected_item) (selected_item == client->message_list.n - 1)
+#define LAST_MSG_IN_MENU_SELECTED(client, selected_item) (selected_item == client->message_list.n - 1)
 #define FIRST_ITEM_AND_ITEMS_EXIST_BEFORE_SELECTED_ITEM(client, selected_item) (get_selected_message(client)->seqno > 1)
-#define LAST_ITEM_AND_ITEMS_EXIST_AFTER_SELECTED_ITEM(client, selected_item) (get_selected_message(client)->seqno < client->sel_mbox->total)
+#define LAST_MSG_AND_ITEMS_EXIST_AFTER_SELECTED_ITEM(client, selected_item) (get_selected_message(client)->seqno < client->sel_mbox->total)
+
+#define FIRST_PAGE_AND_ITEMS_EXIST_BEFORE_CURRENT_ITEM(client, selected_item) (selected_item > 0 && selected_item < MAIN_PANE_HEIGHT)
+#define LAST_PAGE_AND_FOLDERS_EXIST_AFTER_CURRENT_ITEM(client, selected_item) (selected_item < client->folders.n - 1 && selected_item >= client->folders.n - MAIN_PANE_HEIGHT)
+#define LAST_FOLDER_IN_MENU_SELECTED(client, selected_item) (selected_item == client->folders.n - 1)
 
 /* If you are on the first page, pressing PAGE UP will not do anything, even if there are items above, i.e. it will not autoselect the first item on the page.
  * This is important for implementation details of dynamically paging up to previous messages are that are currently off-menu.
  * This logic needs to trigger if we are anywhere on the first page, not merely if the first item is selected.
  * Similar logic applies to page down operations. */
 #define FIRST_PAGE_AND_PAGES_EXIST_BEFORE_CURRENT_PAGE(client, selected_item) (client->start_seqno > 1 && selected_item < MAIN_PANE_HEIGHT)
-#define LAST_PAGE_AND_PAGES_EXIST_AFTER_CURRENT_PAGE(client, selected_item) (client->end_seqno < client->sel_mbox->total && (uint32_t) selected_item >= client->end_seqno - MAIN_PANE_HEIGHT)
+#define LAST_MSG_PAGE_AND_PAGES_EXIST_AFTER_CURRENT_PAGE(client, selected_item) (client->end_seqno < client->sel_mbox->total && (uint32_t) selected_item >= client->end_seqno - MAIN_PANE_HEIGHT)
 #define FIRST_MESSAGE_IN_CURRENT_MENU(client) (client->start_seqno == 1)
 #define LAST_MESSAGE_IN_CURRENT_MENU(client) (client->end_seqno == client->sel_mbox->total)
 
@@ -1762,9 +1774,9 @@ huntmsg:
 							UPDATE_MPANE_NOREFRESH(client);
 						}
 					} else { /* res == KEY_RIGHT || res == KEY_SRIGHT */
-						if (LAST_ITEM_IN_MENU_SELECTED(client, selected_item)) {
+						if (LAST_MSG_IN_MENU_SELECTED(client, selected_item)) {
 							/* We're trying to scroll down off the bottom of the menu */
-							if (LAST_ITEM_AND_ITEMS_EXIST_AFTER_SELECTED_ITEM(client, selected_item)) {
+							if (LAST_MSG_AND_ITEMS_EXIST_AFTER_SELECTED_ITEM(client, selected_item)) {
 								uint32_t seqno = get_selected_message(client)->seqno;
 								if (repaginate(client, seqno, +FETCHLIST_INTERVAL/2, seqno + 1)) {
 									return -1;
@@ -1798,12 +1810,43 @@ huntmsg:
 				goto resize; /* Redraw main screen */
 			}
 			break;
+
+/* The first one is ALL, which isn't even selectable, so start at 1.
+ * However, we first focus the "ALL" pseudofolder to ensure that it's always visible
+ * in case it's not initially. Otherwise, it's possible that we might
+ * not be able to get it back into focus. */
+#define FOCUS_FIRST_FOLDER() \
+	set_current_item(client->folders.menu, client->folders.items[0]); \
+	set_current_item(client->folders.menu, client->folders.items[1]);
+
 		case 337: /* SHIFT + UP */
+		case KEY_SLEFT: /* SHIFT + LEFT, since some terminals like qodem don't pass SHIFT + UP/DN, only SHIFT + L/R */
+		case 572: /* CTRL+SHIFT+LEFT, PuTTY supports it but qodem does not */
 		case KEY_UP: /* Go up to lower sequenced numbered message */
 up:
 			if (FOCUSED(client, FOCUS_FOLDERS)) {
-				menu_driver(client->folders.menu, REQ_UP_ITEM);
-				/*! \todo Could also jump to previous unmarked mailbox, need logic to prevent looping if we hit 0 though - same for down */
+				ITEM *selection = current_item(client->folders.menu);
+				int selected_item = item_index(selection);
+				if (FIRST_ITEM_IN_MENU_SELECTED(client, selected_item) || selected_item == 1) {
+					beep();
+				} else {
+					menu_driver(client->folders.menu, REQ_UP_ITEM);
+					if (c == 337 || c == KEY_SLEFT) {
+						/* Only want to jump to marked mailboxes */
+						selection = current_item(client->folders.menu);
+						selected_item = item_index(selection);
+						if (!(client->mailboxes[selected_item].flags & IMAP_MAILBOX_MARKED)) {
+							goto up;
+						}
+					} else if (c == 572) {
+						/* Jump to unread */
+						selection = current_item(client->folders.menu);
+						selected_item = item_index(selection);
+						if (client->mailboxes[selected_item].unseen == 0) {
+							goto up;
+						}
+					}
+				}
 				set_highlighted_folder(client);
 			} else { /* FOCUS_MESSAGES */
 huntupmsg:
@@ -1829,21 +1872,46 @@ huntupmsg:
 					}
 				} else {
 					menu_driver(client->message_list.menu, REQ_UP_ITEM);
-					if (c == 337) {
+					if (c == 337 || c == KEY_SLEFT) {
 						/* Only want older messages that are unread */
 						if (get_selected_message(client)->flags & IMAP_MESSAGE_FLAG_SEEN) {
 							goto huntupmsg;
 						}
+					} else if (c == 572) {
+						beep();
 					}
 					UPDATE_MPANE_FOOTER(client);
 				}
 			}
 			break;
 		case 336: /* SHIFT + DOWN */
+		case KEY_SRIGHT: /* SHIFT + LEFT, since some terminals like qodem don't pass SHIFT + UP/DN, only SHIFT + L/R */
+		case 531: /* CTRL+SHIFT+LEFT, PuTTY supports it but qodem does not */
 		case KEY_DOWN: /* Go down to higher sequence numbered message */
 down:
 			if (FOCUSED(client, FOCUS_FOLDERS)) {
-				menu_driver(client->folders.menu, REQ_DOWN_ITEM);
+				ITEM *selection = current_item(client->folders.menu);
+				int selected_item = item_index(selection);
+				if (LAST_FOLDER_IN_MENU_SELECTED(client, selected_item)) {
+					beep();
+				} else {
+					menu_driver(client->folders.menu, REQ_DOWN_ITEM);
+					if (c == 336 || c == KEY_SRIGHT) {
+						/* Only want to jump to marked mailboxes */
+						selection = current_item(client->folders.menu);
+						selected_item = item_index(selection);
+						if (!(client->mailboxes[selected_item].flags & IMAP_MAILBOX_MARKED)) {
+							goto down;
+						}
+					} else if (c == 531) {
+						/* Jump to unread */
+						selection = current_item(client->folders.menu);
+						selected_item = item_index(selection);
+						if (client->mailboxes[selected_item].unseen == 0) {
+							goto down;
+						}
+					}
+				}
 				set_highlighted_folder(client);
 			} else { /* FOCUS_MESSAGES */
 huntdownmsg:
@@ -1856,9 +1924,9 @@ huntdownmsg:
 					break;
 				}
 				selected_item = item_index(selection);
-				if (LAST_ITEM_IN_MENU_SELECTED(client, selected_item)) {
+				if (LAST_MSG_IN_MENU_SELECTED(client, selected_item)) {
 					/* We're trying to scroll down off the bottom of the menu */
-					if (LAST_ITEM_AND_ITEMS_EXIST_AFTER_SELECTED_ITEM(client, selected_item)) {
+					if (LAST_MSG_AND_ITEMS_EXIST_AFTER_SELECTED_ITEM(client, selected_item)) {
 						uint32_t seqno = get_selected_message(client)->seqno;
 						if (repaginate(client, seqno, +FETCHLIST_INTERVAL/2, seqno + 1)) {
 							return -1;
@@ -1869,11 +1937,13 @@ huntdownmsg:
 					}
 				} else {
 					menu_driver(client->message_list.menu, REQ_DOWN_ITEM);
-					if (c == 336) {
+					if (c == 336 || c == KEY_SRIGHT) {
 						/* Only want newer messages that are unread */
 						if (get_selected_message(client)->flags & IMAP_MESSAGE_FLAG_SEEN) {
 							goto huntdownmsg;
 						}
+					} else if (c == 531) {
+						beep();
 					}
 					UPDATE_MPANE_FOOTER(client);
 				}
@@ -1881,7 +1951,18 @@ huntdownmsg:
 			break;
 		case KEY_PPAGE: /* Page up to lower sequence numbered messages */
 			if (FOCUSED(client, FOCUS_FOLDERS)) {
-				menu_driver(client->folders.menu, REQ_SCR_UPAGE);
+				ITEM *selection = current_item(client->folders.menu);
+				int selected_item = item_index(selection);
+				if (FIRST_PAGE_AND_ITEMS_EXIST_BEFORE_CURRENT_ITEM(client, selected_item)) {
+					/* Same as HOME key if on first page already */
+					FOCUS_FIRST_FOLDER();
+				} else {
+					if (selected_item > 0) {
+						menu_driver(client->folders.menu, REQ_SCR_UPAGE);
+					} else {
+						beep();
+					}
+				}
 				set_highlighted_folder(client);
 			} else { /* FOCUS_MESSAGES */
 				ITEM *selection = current_item(client->message_list.menu);
@@ -1901,12 +1982,23 @@ huntdownmsg:
 			break;
 		case KEY_NPAGE: /* Page down to higher sequence numbered messages */
 			if (FOCUSED(client, FOCUS_FOLDERS)) {
-				menu_driver(client->folders.menu, REQ_SCR_DPAGE);
+				ITEM *selection = current_item(client->folders.menu);
+				int selected_item = item_index(selection);
+				if (LAST_PAGE_AND_FOLDERS_EXIST_AFTER_CURRENT_ITEM(client, selected_item)) {
+					/* Same as END key if on last page already */
+					set_current_item(client->folders.menu, client->folders.items[client->folders.n - 1]);
+				} else {
+					if (selected_item < client->folders.n - 1) {
+						menu_driver(client->folders.menu, REQ_SCR_DPAGE);
+					} else {
+						beep();
+					}
+				}
 				set_highlighted_folder(client);
 			} else { /* FOCUS_MESSAGES */
 				ITEM *selection = current_item(client->message_list.menu);
 				int selected_item = item_index(selection);
-				if (LAST_PAGE_AND_PAGES_EXIST_AFTER_CURRENT_PAGE(client, selected_item)) {
+				if (LAST_MSG_PAGE_AND_PAGES_EXIST_AFTER_CURRENT_PAGE(client, selected_item)) {
 					uint32_t seqno = get_selected_message(client)->seqno;
 					uint32_t newseqno = seqno + MAIN_PANE_HEIGHT;
 					newseqno = newseqno > client->sel_mbox->total ? client->sel_mbox->total : newseqno;
@@ -1921,7 +2013,7 @@ huntdownmsg:
 			break;
 		case KEY_HOME:
 			if (FOCUSED(client, FOCUS_FOLDERS)) {
-				set_current_item(client->folders.menu, client->folders.items[0]);
+				FOCUS_FIRST_FOLDER();
 				set_highlighted_folder(client);
 			} else { /* FOCUS_MESSAGES */
 				if (FIRST_MESSAGE_IN_CURRENT_MENU(client)) {

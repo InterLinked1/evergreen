@@ -310,7 +310,18 @@ int handle_message_op(struct client *client, struct pollfd *pfds, struct message
 			beep();
 			return 0;
 		}
-		if (client_idle_stop(client) || client_move(client, msg, client->trash_mbox->name)) {
+		if (client_idle_stop(client)) {
+			return -1;
+		}
+		/* Mark seen before moving to Trash - Thunderbird-based clients also do this */
+		if (!MSG_SEEN(msg)) {
+			if (client_store_seen(client, +1, msg)) {
+				return -1;
+			}
+			mark_message_seen(client->sel_mbox, msg);
+			client->mailboxes[0].unseen--; /* TOTAL */
+		}
+		if (client_move(client, msg, client->trash_mbox->name)) {
 			return -1;
 		}
 		increment_stats(client->trash_mbox, msg);
