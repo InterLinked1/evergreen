@@ -152,7 +152,7 @@ void delete_message(struct client *client, struct message *msg)
 	free_message(client, msg);
 }
 
-/* XXX For messages like move, when called from viewer (as opposed to message list),
+/* XXX For operations like move,
  * the number of messages is changed after we return, which clears the status pane,
  * so the status update is essentially lost. */
 int handle_message_op(struct client *client, struct pollfd *pfds, struct message *msg, struct message_data *mdata, int c)

@@ -951,6 +951,9 @@ static int ends_with(const char *s, const char *sub)
 static struct mailbox *find_specialuse_mailbox(struct client *client, int flag, const char *suffix)
 {
 	int i;
+	char parent[512], parent2[512];
+	int has_parent_a, has_parent_b;
+	size_t parentlen;
 	struct mailbox *best = NULL;
 	int max_common = 0, common;
 	int found_specialuse = 0;
@@ -959,6 +962,9 @@ static struct mailbox *find_specialuse_mailbox(struct client *client, int flag, 
 	 * In simple environments, there should only be one, probably called "Trash",
 	 * but if there are multiple namespaces available to use, we may have
 	 * several Trash mailboxes, and we need to select the right one. */
+
+	has_parent_a = mkparent(client, parent, sizeof(parent), client->sel_mbox->name);
+	parentlen = strlen(parent);
 
 	for (i = 0; i < client->num_mailboxes; i++) {
 		if (!(client->mailboxes[i].flags & flag)) {
@@ -972,8 +978,22 @@ static struct mailbox *find_specialuse_mailbox(struct client *client, int flag, 
 		 * Other Users.jsmith.Sub.Folder
 		 * Other Users.jsmith.Trash is likely the correct trash mailbox,
 		 * not Trash, or anything else. */
+		has_parent_b = mkparent(client, parent2, sizeof(parent2), client->mailboxes[i].name);
+		if (has_parent_a != has_parent_b) {
+			client_debug(5, "One has a parent and one doesn't: %s / %s, %d / %d\n", parent, parent2, has_parent_a, has_parent_b);
+			continue;
+		} else if (has_parent_a) {
+			/* One parent must at least start with the other,
+			 * for example, Gmail's special use folders are in
+			 * subfolders of [Gmail]. */
+			if (strncmp(parent, parent2, parentlen) && strncmp(parent, parent2, strlen(parent2))) {
+				client_debug(5, "Different parents: %s != %s\n", parent, parent2);
+				continue;
+			}
+		}
 		common = num_common_prefix_chars(client->sel_mbox->name, client->mailboxes[i].name);
 		if (common >= max_common) { /* >=, so even if 0 common prefix chars, Trash should override */
+			client_debug(5, "%s is a better match than %s: %d", client->mailboxes[i].name, best ? best->name : "(empty)", common);
 			best = &client->mailboxes[i];
 			max_common = common;
 		}

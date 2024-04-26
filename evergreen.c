@@ -2140,7 +2140,7 @@ static int process_option(struct config *config, const char *optname, const char
 	char *tmp;
 
 	if (phony_options) {
-		client_debug(5, "Processed option '%s'", optname);
+		client_debug(10, "Processed option '%s'", optname);
 		return 0;
 	}
 
@@ -2353,7 +2353,7 @@ static int load_config(struct config *restrict config, int argc, char *argv[])
 			process_option(config, long_options[option_index].name, optarg);
 			break;
 		default:
-			client_debug(5, "Processed option '%c'", c);
+			client_debug(10, "Processed option '%c'", c);
 			break;
 		}
 	}
