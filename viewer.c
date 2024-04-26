@@ -209,6 +209,10 @@ static int pad_add(WINDOW *pad, const char *restrict data, size_t len, int flags
 			client_debug(1, "WARNING: Parsed NUL character in message output?");
 			break;
 		}
+#if 0
+		/* Extra extra debug for assertion failures: */
+		client_debug(5, "outputcol is %d, at row %d, col %d (char %d: '%c')", outputcol, y, x, *c, isprint(*c) ? *c : ' ');
+#endif
 		if (x != outputcol) {
 			client_debug(1, "WARNING! outputcol is %d, but actually at row %d, col %d? (char %d: '%c')", outputcol, y, x, *c, isprint(*c) ? *c : ' ');
 			if (*c <= 127) {
@@ -228,7 +232,7 @@ static int pad_add(WINDOW *pad, const char *restrict data, size_t len, int flags
 				was_unicode = 0;
 			}
 		} else {
-			was_unicode = 0;
+			was_unicode = *c >= 128;
 		}
 		if (*c == '\r') {
 			outputcol--; /* We're not drawing anything, and loop post will increment again */

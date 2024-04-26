@@ -623,6 +623,8 @@ static int send_message(struct client *client, FIELD *fields[NUM_FIELDS + 1], st
 					increment_stats_by_size(client->sent_mbox, msglen, 0);
 					increment_stats_by_size(&client->mailboxes[0], msglen, 0); /* Aggregate stats */
 				}
+			} else {
+				res = 2;
 			}
 		}
 	}
@@ -811,6 +813,13 @@ static void format_and_quote_body(FORM *form, const char *body, int addquotes)
 #endif
 		if (!strncmp(s, "\r\n", 2)) {
 			if (outputcol > 0 && s[-1] == ' ' && *(s + 2) && next_n_quotes(s + 2, quote_depth)) {
+				/* We just printed the format=flowed space at the end of the input line,
+				 * but that conflicts with this path:
+				 * if (addquotes && inputcol == 0 && quote_depth == 0) {
+				 */
+				form_driver(form, REQ_DEL_PREV);
+				outputcol--;
+
 				client_debug(9, "format=flowed line break on row %d, col %d", row, outputcol);
 				/* This is a format=flowed soft line wrap, don't actually wrap */
 				s += STRLEN("\r\n"); /* Skip CR LF */
@@ -820,6 +829,9 @@ static void format_and_quote_body(FORM *form, const char *body, int addquotes)
 					/* Skip space, since we already printed the format=flowed space at end of previous line */
 					inputcol++;
 					s++;
+					client_debug(9, "Skipped format=flowed space, next character is '%c'", *s);
+				} else {
+					client_debug(9, "Didn't skip format=flowed space, next character is '%c'", *s);
 				}
 				/* Resume */
 			} else {
@@ -853,14 +865,18 @@ static void format_and_quote_body(FORM *form, const char *body, int addquotes)
 				last_sp = memrchr(s - outputcol, ' ', outputcol);
 				if (last_sp) {
 					int diff = s - 1 - last_sp;
-					client_debug(9, "Backing up %d characters", diff);
-					for (j = 0; j < diff; j++) {
-						form_driver(form, REQ_DEL_PREV);
+					if (diff < outputcol - 2) {
+						client_debug(9, "Backing up %d characters", diff);
+						for (j = 0; j < diff; j++) {
+							form_driver(form, REQ_DEL_PREV);
+						}
+						/* Back up and break the line there instead */
+						s -= diff;
+						outputcol -= diff;
+						inputcol -= diff;
+					} else {
+						client_debug(1, "Can't wrap this line: %d/%d", diff, outputcol);
 					}
-					/* Back up and break the line there instead */
-					s -= diff;
-					outputcol -= diff;
-					inputcol -= diff;
 				}
 				outputcol = 0;
 				form_driver(form, REQ_NEW_LINE);
@@ -871,7 +887,7 @@ static void format_and_quote_body(FORM *form, const char *body, int addquotes)
 				for (j = 0; j < quote_depth; j++) {
 					FORM_PUTC('>');
 				}
-				if (quote_depth) { /* Condition added since down below we also add a space, but only if quote_depth is 0 */
+				if (quote_depth || *s != ' ') { /* Condition added since down below we also add a space, but only if quote_depth is 0 */
 					/* Ensure there's a space after the quotes before continuing */
 					FORM_PUTC(' ');
 				}
@@ -901,6 +917,10 @@ static void format_and_quote_body(FORM *form, const char *body, int addquotes)
 					int linelen = line_len(s);
 					in_quotes = 0;
 					client_debug(10, "Quote depth of row %d is %d (%d chars left on line)", row, quote_depth, linelen);
+					/* It doesn't start with space, add one for readability */
+					if (*s != ' ') {
+						FORM_PUTC(' ');
+					}
 				}
 			}
 			if (addquotes && inputcol == 0 && quote_depth == 0) {
@@ -2093,7 +2113,7 @@ resize:
 			if (res < 0) {
 				goto done;
 			} else if (res > 0) {
-				client_set_status_nout(client, msgc.error[0] ? msgc.error : "Error sending message");
+				client_set_status_nout(client, msgc.error[0] ? msgc.error : res == 2 ? "Sent, error saving message" : "Error sending message");
 				beep();
 				if (needresize) {
 					goto resize;

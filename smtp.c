@@ -68,6 +68,14 @@ static int add_recipients(struct message_constructor *msgc, struct mailsmtp *smt
 					client_debug(3, "Malformed recipient?");
 					continue;
 				}
+				/* mailesmtp_rcpt does not want <> surrounding the address, strip em here */
+				*recipient++ = '\0';
+				tmp = strchr(recipient, '>');
+				if (!tmp) {
+					client_debug(3, "Malformed recipient?");
+					continue;
+				}
+				*tmp = '\0';
 			} else {
 				/* The spaces we trimmed must have been at the end */
 			}

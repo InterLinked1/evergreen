@@ -2298,6 +2298,10 @@ static int client_flush_pending_output(struct client *client)
 			line = mailimap_read_line(client->imap);
 			/* Read and discard */
 			client_debug(1, "Flushing output '%s'", line);
+			if (strlen_zero(line)) {
+				/* Avoid infinite loop if we keep reading nothing */
+				break;
+			}
 		} else {
 			break;
 		}
@@ -2879,6 +2883,8 @@ static int __handle_store(struct client *client, int sign, struct mailimap_set *
 	int res;
 	struct mailimap_store_att_flags *att_flags;
 
+	assert(!client->idling);
+
 	if (sign > 0) {
 		att_flags = mailimap_store_att_flags_new_add_flags_silent(flag_list);
 	} else {
@@ -2908,6 +2914,8 @@ int client_store(struct client *client, int sign, struct message *msg, int flags
 	int res = 0;
 	struct mailimap_flag_list *flag_list;
 	struct mailimap_set *set;
+
+	assert(!client->idling);
 
 	if (msg) {
 		set = mailimap_set_new_single(msg->uid);
@@ -2954,6 +2962,8 @@ int client_store_keyword(struct client *client, int sign, struct message *msg, c
 	char *keyword_dup = NULL;
 	struct mailimap_flag *flag;
 
+	assert(!client->idling);
+
 	if (msg) {
 		set = mailimap_set_new_single(msg->uid);
 	} else {
@@ -2993,6 +3003,8 @@ int client_copy(struct client *client, struct message *msg, const char *newmbox)
 	int res;
 	struct mailimap_set *set;
 
+	assert(!client->idling);
+
 	client_debug(3, "=> COPY %u %s\n", msg->uid, newmbox);
 	set = mailimap_set_new_single(msg->uid);
 	if (!set) {
@@ -3012,6 +3024,8 @@ int client_move(struct client *client, struct message *msg, const char *newmbox)
 {
 	int res;
 	struct mailimap_set *set;
+
+	assert(!client->idling);
 
 	client_debug(3, "=> MOVE %u %s", msg->uid, newmbox);
 	set = mailimap_set_new_single(msg->uid);
@@ -3041,6 +3055,7 @@ int client_move(struct client *client, struct message *msg, const char *newmbox)
 
 int client_expunge(struct client *client)
 {
+	assert(!client->idling);
 	return mailimap_expunge(client->imap);
 }
 
@@ -3048,6 +3063,8 @@ int client_append(struct client *client, const char *mailbox, int flags, const c
 {
 	int res;
 	struct mailimap_flag_list *flag_list;
+
+	assert(!client->idling);
 
 	/* Automark anything we upload as \Seen */
 	flag_list = mailimap_flag_list_new_empty();
@@ -3059,6 +3076,7 @@ int client_append(struct client *client, const char *mailbox, int flags, const c
 	}
 
 	res = mailimap_append(client->imap, mailbox, flag_list, NULL, msg, len);
+	mailimap_flag_list_free(flag_list);
 	if (res != MAILIMAP_NO_ERROR) {
 		client_warning("APPEND failed: %s", maildriver_strerror(res));
 		return -1;

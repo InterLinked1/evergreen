@@ -1238,7 +1238,7 @@ static void adjust_start_seqno(struct client *client, uint32_t current, int offs
 		/* Going up */
 		uint32_t max_start_seqno;
 
-		if (client->sel_mbox->total > FETCHLIST_INTERVAL) {
+		if (client->sel_mbox->total > (uint32_t) FETCHLIST_INTERVAL) {
 			max_start_seqno = client->sel_mbox->total - FETCHLIST_INTERVAL;
 		} else {
 			max_start_seqno = 1;

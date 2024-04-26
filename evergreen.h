@@ -37,7 +37,7 @@
  * In return, more messages can be scrolled at once without
  * having to re-download another set of headers.
  */
-#define FETCHLIST_INTERVAL 180
+#define FETCHLIST_INTERVAL (2 * LINES)
 
 /* Window dimension settings */
 #define MIN_COLS_FOR_EXPANDED_LIST_INFO 97
