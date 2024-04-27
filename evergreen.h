@@ -68,6 +68,7 @@
 #include <time.h> /* struct tm */
 
 #include <ncurses.h>
+#include <form.h>
 #include <menu.h>
 
 #define KEY_ESCAPE 27
@@ -284,6 +285,7 @@ struct client {
 	WINDOW *win_folders;		/*!< Folders pane */
 	WINDOW *win_main;			/*!< Message pane */
 	WINDOW *win_footer;			/*!< Footer */
+	WINDOW *cur_win;			/*!< Current window */
 	/* Mailbox data and state */
 	struct mailbox *mailboxes;	/*!< Mailboxes array */
 	int num_mailboxes;			/*!< Number of mailboxes */
@@ -292,6 +294,7 @@ struct client {
 	unsigned int focus:1;		/*!< Message pane focused (as opposed to folder pane) */
 	unsigned int idling:1;		/*!< Currently IMAP idling */
 	unsigned int mouse_enable:1;	/*!< Mouse currently enabled? */
+	unsigned int cursor:1;		/*!< Cursor currently active? */
 	int menu_depth;				/*!< Current depth of menus/submenus */
 	int resize_depth;			/*!< Current resize depth */
 	time_t idlestart;			/*!< Time IDLE started */

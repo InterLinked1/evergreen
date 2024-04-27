@@ -1782,6 +1782,8 @@ redraw:
 	wnoutrefresh(window);
 
 	curs_set(2); /* Show cursor in editor, extra visible */
+	client->cursor = 1;
+	client->cur_win = window;
 	doupdate();
 
 	for (;;) {
@@ -1833,9 +1835,11 @@ resize:
 			goto redraw;
 		case KEY_ESCAPE:
 			curs_set(0);
+			client->cursor = 0;
 			SUB_MENU_PRE;
 			res = c = show_help_menu(client, pfds, HELP_EDITOR);
 			curs_set(2);
+			client->cursor = 1;
 			SUB_MENU_POST;
 			/* Nothing has happened to the window,
 			 * so doupdate() on its own won't redraw it by default,
@@ -2196,6 +2200,7 @@ resize:
 	}
 
 done:
+	client->cur_win = NULL;
 	unpost_form(form);
 	free_form(form);
 	for (i = 0; i < NUM_FIELDS; i++) {
@@ -2203,5 +2208,6 @@ done:
 	}
 	delwin(window);
 	curs_set(0);
+	client->cursor = 0;
 	return res;
 }

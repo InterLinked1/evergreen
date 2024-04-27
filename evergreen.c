@@ -123,6 +123,15 @@ void client_set_status_nout(struct client *client, const char *s)
 	/* Write message to status bar (footer) */
 	mvwaddstr(client->win_footer, 0, STATUS_BAR_START_COL, s);
 	wnoutrefresh(client->win_footer);
+	if (client->cursor) {
+		/* Restore original cursor position,
+		 * simply by updating whatever window the cursor was on before we moved it to update the status bar.
+		 * The next call to doupdate() will make sure the cursor is restored,
+		 * rather than lingering after the status text until the next screen update. */
+		if (client->cur_win) {
+			wnoutrefresh(client->cur_win);
+		}
+	}
 }
 
 static void client_clear_status(struct client *client)
@@ -288,6 +297,7 @@ static int client_term_init(struct client *client)
     noecho();
 	keypad(stdscr, TRUE); /* Enable keypad for function key interpretation (escape sequences) */
 	curs_set(0); /* Disable cursor */
+	client->cursor = 0;
 	start_color(); /* Enable colors */
 
 	/* Since menus are by default white on black,
