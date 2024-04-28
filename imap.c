@@ -1099,6 +1099,8 @@ int client_select(struct client *client, struct mailbox *mbox)
 	}
 
 	/* Save current quota usage. */
+	client->quota_limit = 0; /* Reset first, in case not available for this folder */
+	client->quota_used = 0;
 	if (IMAP_HAS_CAPABILITY(client, IMAP_CAPABILITY_QUOTA)) {
 		load_quota(client, mbox);
 	}

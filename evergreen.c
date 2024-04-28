@@ -350,9 +350,13 @@ void display_mailbox_info(struct client *client)
 	struct mailbox *mbox = client->sel_mbox;
 	char buf[STATUS_BAR_START_COL + sizeof(sizebuf)]; /* Can't display more than this, so limit the buf to this + sizebuf for snprintf truncation warning */
 
-	if (client->quota_limit) {
-		if (SIZE_MB(client->quota_used) >= 10 || SIZE_MB(client->quota_limit) > 100) {
-			snprintf(quota, sizeof(quota), " [%d/%dM]", SIZE_MB(client->quota_used), SIZE_MB(client->quota_limit));
+	/* Only need one or the other, the server may not provide both: */
+	if (client->quota_limit || client->quota_used) {
+		/* Unlike most stuff, the mailbox quota sizes are in units of KB, not bytes,
+		 * so we can't use the corresponding SIZE macros directly as they are off by a factor of 1024. */
+#define QUOTA_MB(s) SIZE_KB(s)
+		if (QUOTA_MB(client->quota_used) >= 10 || QUOTA_MB(client->quota_limit) > 100) {
+			snprintf(quota, sizeof(quota), " [%d/%dM]", QUOTA_MB(client->quota_used), QUOTA_MB(client->quota_limit));
 		} else {
 			snprintf(quota, sizeof(quota), " [%d/%dK]", client->quota_used, client->quota_limit);
 		}
