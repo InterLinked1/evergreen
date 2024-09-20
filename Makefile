@@ -12,7 +12,8 @@ EXE		= evergreen
 RM		= rm -f
 INSTALL = install
 LIBS    = -lncurses -lmenu -lform -L/usr/local/lib -Wl,-rpath=/usr/local/lib/ -letpan
-ETPANCFLAGS=-I/usr/local/include
+NCURSES_FLAGS=$(shell pkg-config --cflags ncurses)
+ETPAN_FLAGS=-I/usr/local/include
 
 MAIN_SRC := $(wildcard *.c)
 MAIN_OBJ = $(MAIN_SRC:.c=.o)
@@ -21,7 +22,7 @@ $(EXE): $(MAIN_OBJ)
 	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(EXE) *.o $(LIBS)
 
 %.o : %.c
-	$(CC) $(CFLAGS) -c -funsigned-char -Wno-format-y2k $(ETPANCFLAGS) $^
+	$(CC) $(CFLAGS) -c -funsigned-char -Wno-format-y2k $(NCURSES_FLAGS) $(ETPAN_FLAGS) $^
 
 install:
 	$(INSTALL) -m  755 $(EXE) "/usr/bin"

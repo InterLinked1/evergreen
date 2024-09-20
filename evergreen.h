@@ -64,7 +64,11 @@
 #define USER_AGENT EVERGREEN_PROGNAME " " EVERGREEN_VERSION " (" EVERGREEN_SOURCE_URL ")"
 
 #define _GNU_SOURCE /* bzero, insque, remque */
+
+#ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE /* strptime */
+#endif
+
 #include <time.h> /* struct tm */
 
 #include <ncurses.h>
