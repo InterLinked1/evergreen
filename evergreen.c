@@ -1577,10 +1577,12 @@ static int client_menu(struct client *client)
 					/* Message pane and folder pane need redraw */
 					goto resize;
 				} else if (res > 0) {
+					ITEM *selection;
+					int saved_message_item;
 redraw: /* Rerender folder pane, message pane, leave status bar alone */
 					/* Message pane and folder pane need redraw, don't clear status bar */
-					ITEM *selection = current_item(client->message_list.menu);
-					int saved_message_item = item_index(selection);
+					selection = current_item(client->message_list.menu);
+					saved_message_item = item_index(selection);
 					client->refreshflags |= REFRESH_MESSAGE_PANE;
 					client_debug(3, "Redrawing folder/message pane, not status bar");
 					if (redraw_folder_pane(client) || rerender_message_pane_by_index(client, saved_message_item)) {
@@ -1716,10 +1718,10 @@ select_current:
 					return res;
 				}
 			} else { /* FOCUS_MESSAGES */
-viewmsg:
 				/* Selected the focused message */
 				struct message *msg;
 				int needresize;
+viewmsg:
 				if (!current_item(client->message_list.menu)) {
 					/* Mailbox must be empty */
 					beep();
@@ -1745,6 +1747,8 @@ viewmsg:
 					SUB_MENU_POST_DELAYRESIZE(needresize);
 				}
 				if (res == KEY_LEFT || res == KEY_RIGHT || res == KEY_SLEFT || res == KEY_SRIGHT) {
+					ITEM *selection;
+					int selected_item;
 					/* Navigate between messages.
 					 *
 					 * Pressing the left or right arrow keys while viewing a message
@@ -1760,8 +1764,8 @@ viewmsg:
 					 * However, if we do need to resize and can't actually open a different
 					 * message now, we'll need to do that below. */
 huntmsg:
-					ITEM *selection = current_item(client->message_list.menu);
-					int selected_item = item_index(selection);
+					selection = current_item(client->message_list.menu);
+					selected_item = item_index(selection);
 					if (res == KEY_LEFT || res == KEY_SLEFT) {
 						if (FIRST_ITEM_IN_MENU_SELECTED(client, selected_item)) {
 							/* We're trying to scroll up off the top of the menu */
@@ -1863,9 +1867,10 @@ up:
 				}
 				set_highlighted_folder(client);
 			} else { /* FOCUS_MESSAGES */
-huntupmsg:
 				int selected_item;
-				ITEM *selection = current_item(client->message_list.menu);
+				ITEM *selection;
+huntupmsg:
+				selection = current_item(client->message_list.menu);
 				if (!selection) {
 					client_debug(1, "No selection (mailbox must be empty)");
 					/* Status bar already says mailbox is empty */
@@ -1928,9 +1933,10 @@ down:
 				}
 				set_highlighted_folder(client);
 			} else { /* FOCUS_MESSAGES */
-huntdownmsg:
 				int selected_item;
-				ITEM *selection = current_item(client->message_list.menu);
+				ITEM *selection;
+huntdownmsg:
+				selection = current_item(client->message_list.menu);
 				if (!selection) {
 					client_debug(1, "No selection (mailbox must be empty)");
 					/* Status bar already says mailbox is empty */
