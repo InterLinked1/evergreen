@@ -49,3 +49,39 @@ jobs:
           cd ../evergreen
           make
           make install
+  debian-11:
+    runs-on: ubuntu-latest
+    name: Debian 11
+    container: debian:11
+    steps:
+     - name: Checkout
+       uses: actions/checkout@v4
+     - name: Start build
+       run: |
+          apt-get update
+          apt-get install -y git wget automake pkg-config libtool m4 build-essential libncurses-dev
+          cd ..
+          git clone https://github.com/InterLinked1/lbbs.git
+          cd lbbs
+          scripts/libetpan.sh
+          cd ../evergreen
+          make
+          make install
+  debian-10:
+    runs-on: ubuntu-latest
+    name: Debian 10
+    container: debian:10
+    steps:
+     - name: Checkout
+       uses: actions/checkout@v4
+     - name: Start build
+       run: |
+          apt-get update
+          apt-get install -y git wget automake pkg-config libtool m4 build-essential libncurses-dev
+          cd ..
+          git clone https://github.com/InterLinked1/lbbs.git
+          cd lbbs
+          scripts/libetpan.sh
+          cd ../evergreen
+          make
+          make install
