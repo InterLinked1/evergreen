@@ -1263,32 +1263,67 @@ static inline void process_header_data(struct message *msg, const char *hdrname,
 	}
 }
 
+/*! \brief Faster than strncat, since we store our position between calls, but maintain its safety */
+#define SAFE_FAST_APPEND(bufstart, bufsize, bufpos, buflen, fmt, ...) \
+	if (buflen > 0) { \
+		int _bytes = snprintf(bufpos, (size_t) buflen, bufpos == bufstart ? fmt : " " fmt, ## __VA_ARGS__); \
+		bufpos += (typeof((buflen))) _bytes; \
+		buflen -= (typeof((buflen))) _bytes; \
+		if ((int) buflen <= 0) { \
+			client_debug(1, "Buffer truncation (%lu)\n", (size_t) buflen); \
+			*(bufstart + bufsize - 1) = '\0';  \
+			buflen = 0; \
+		} \
+	}
+
 static inline void process_headers_data(struct message *msg, char *headers)
 {
+	char headerval[1024];
+	char *pos = headerval;
+	int middle_of_header = 0;
+	size_t left, len = sizeof(headerval);
 	char *header, *tmp;
+	char *hdrname = NULL;
 
-	/* This function only parses the first line of headers, if they are multi-line,
-	 * since we won't be able to display more than that in the message pane anyways.
-	 * When a message is actually selected, that's different. */
+	left = len;
+
+	/* Even though we won't be able to display more than the first line in the message pane,
+	 * we still need to properly parse the entire header since they may be displayed
+	 * more fully in the message pane, and we need the full length for including ellipses
+	 * in the message pane. */
 
 	while ((header = strsep(&headers, "\n"))) {
-		char *hdrname, *hdrval = header;
+		char *hdrval = header;
 		if (strlen_zero(header)) {
 			break; /* End of headers */
 		}
 		if (isspace(header[0])) {
-			continue; /* Skip continuations of multiline headers */
-		}
-		hdrname = strsep(&hdrval, ":");
-		while (hdrval && *hdrval == ' ') {
-			hdrval++; /* Skip leading whitespace */
+			if (!middle_of_header) {
+				client_debug(1, "Ignoring header continuation when not in header?");
+				continue;
+			}
+			hdrval++;
+		} else {
+			if (middle_of_header) {
+				process_header_data(msg, hdrname, headerval);
+				pos = headerval; /* Reset */
+				left = len;
+			}
+			hdrname = strsep(&hdrval, ":");
+			while (hdrval && *hdrval == ' ') {
+				hdrval++; /* Skip leading whitespace */
+			}
+			middle_of_header = 1;
 		}
 		/* Strip CR */
 		tmp = strchr(hdrval, '\r');
 		if (tmp) {
 			*tmp = '\0';
 		}
-		process_header_data(msg, hdrname, hdrval);
+		SAFE_FAST_APPEND(headerval, len, pos, left, "%s", hdrval);
+	}
+	if (middle_of_header) {
+		process_header_data(msg, hdrname, headerval);
 	}
 }
 
