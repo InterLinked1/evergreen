@@ -28,6 +28,12 @@
 
 #include <libetpan/libetpan.h>
 
+/* Uncomment to debug folder name sorting */
+/* #define DEBUG_FOLDER_ORDER */
+
+/* Uncomment to run tests on startup */
+/* #define TEST_MODE */
+
 static inline void free_mailbox_keywords(struct mailbox *mbox)
 {
 	int i;
@@ -526,6 +532,18 @@ static int namespace_score(struct mailbox_ref *r)
 	}
 }
 
+static int mktopparent(struct client *client, char *restrict buf, size_t len, const char *child)
+{
+	char *tmp;
+	safe_strncpy(buf, child, len);
+	tmp = strchr(buf, client->delimiter);
+	if (tmp) {
+		*tmp = '\0';
+		return 1;
+	}
+	return 0;
+}
+
 static int mkparent(struct client *client, char *restrict buf, size_t len, const char *child)
 {
 	char *tmp;
@@ -541,15 +559,32 @@ static int mkparent(struct client *client, char *restrict buf, size_t len, const
 static inline int mbox_name_cmp(const char *a, const char *b)
 {
 	/*! \todo Make [ sort before alphabetic characters, for things like [Gmail] where that makes sense */
-	return strcmp(a, b);
+	int res = strcasecmp(a, b);
+	if (res < 0) {
+		res = -1;
+	} else if (res > 0) {
+		res = 1;
+	}
+	return res;
+}
+
+static struct mailbox_ref **global_mb_names; /* Hack to get access to all mailbox_ref's from __mailbox_name_cmp without adjusting the args for qsort */
+
+static struct mailbox_ref *find_mailbox_ref(struct client *client, const char *name)
+{
+	int i;
+	for (i = 0; i < client->num_mailboxes; i++) {
+		if (!strcmp(global_mb_names[i]->name, name)) {
+			return global_mb_names[i];
+		}
+	}
+	return NULL;
 }
 
 static int __mailbox_name_cmp(struct client *client, struct mailbox_ref *a, struct mailbox_ref *b, int cmp_attrs)
 {
 	int res = 0;
 	int ns_a, ns_b;
-	int score_a, score_b;
-	int has_parent_a, has_parent_b;
 	char parent_a[512], parent_b[512];
 
 	ns_a = namespace_score(a);
@@ -558,37 +593,52 @@ static int __mailbox_name_cmp(struct client *client, struct mailbox_ref *a, stru
 		res = -1;
 	} else if (ns_b < ns_a) {
 		res = 1;
-	}
-
-	/* If one folder is a prefix of the other,
-	 * then it is its parent */
-	if (!strncmp(a->name, b->name, strlen(a->name))) {
-		/* b starts with a */
-		res = -1;
-	} else if (!strncmp(a->name, b->name, strlen(b->name))) {
-		/* a starts with b */
-		res = 1;
-	}
-
-	has_parent_a = mkparent(client, parent_a, sizeof(parent_a), a->name);
-	has_parent_b = mkparent(client, parent_b, sizeof(parent_b), b->name);
-
-	/* Only compare attributes if the folders are siblings */
-	if (has_parent_a == has_parent_b && (!has_parent_a || !strcmp(parent_a, parent_b))) {
-		score_a = mailbox_name_score(a);
-		score_b = mailbox_name_score(b);
-		if (!res && cmp_attrs) {
-			if (score_a < score_b) {
-				res = -1;
-			} else if (score_b < score_a) {
-				res = 1;
+	} else {
+		/* If one folder is a prefix of the other,
+		 * then it is its parent */
+		if (!strncmp(a->name, b->name, strlen(a->name))) {
+			/* b starts with a */
+			res = -1;
+		} else if (!strncmp(a->name, b->name, strlen(b->name))) {
+			/* a starts with b */
+			res = 1;
+		} else {
+			/* We should compare the top-level only,
+			 * since a subfolder of a special folder should
+			 * come before any non-special folder, regardless of
+			 * which sorts first alphabetically. */
+			mktopparent(client, parent_a, sizeof(parent_a), a->name);
+			mktopparent(client, parent_b, sizeof(parent_b), b->name);
+			if (cmp_attrs) {
+				int score_a, score_b;
+				struct mailbox_ref *ra, *rb;
+				ra = find_mailbox_ref(client, parent_a);
+				rb = find_mailbox_ref(client, parent_b);
+				/* If it's a SPECIAL-USE mailbox, it ranks earlier */
+				if (!ra || !rb) {
+					client_error("ra = %p, rb = %p", ra, rb);
+					assert(ra != NULL);
+					assert(rb != NULL);
+				}
+				score_a = mailbox_name_score(ra);
+				score_b = mailbox_name_score(rb);
+				/* Lower score means the folder should be earlier */
+				if (score_a < score_b) {
+					res = -1;
+				} else if (score_b < score_a) {
+					res = 1;
+				} else {
+					res = mbox_name_cmp(a->name, b->name);
+				}
+			} else {
+				res = mbox_name_cmp(a->name, b->name);
 			}
 		}
 	}
 
-	if (!res) {
-		res = mbox_name_cmp(a->name, b->name);
-	}
+#ifdef DEBUG_FOLDER_ORDER
+	client_debug(3, "--- %s %c %s", a->name, res == -1 ? '<' : '>', b->name);
+#endif
 
 	return res;
 }
@@ -602,6 +652,86 @@ static int mailbox_name_cmp(const void *arg1, const void *arg2, void *varg)
 
 	return __mailbox_name_cmp(client, a, b, 1);
 }
+
+#ifdef TEST_MODE
+static int test_cmp(struct client *client)
+{
+#define ARRAY_LEN(a) (size_t) (sizeof(a) / sizeof(a[0]))
+	size_t i;
+	struct {
+		const char *name;
+		int flags;
+	} mailboxes[] =
+	{
+		{ "INBOX", 0 },
+		{ "Drafts", IMAP_MAILBOX_DRAFTS },
+		{ "Trash", IMAP_MAILBOX_TRASH },
+		{ "Trash.foo", 0 },
+		{ "aa", 0 },
+		{ "bb", 0 },
+		{ "cc", 0 },
+		{ "dd", 0 },
+		{ "Other Users", IMAP_MAILBOX_NOSELECT },
+		{ "Other Users.1aa", IMAP_MAILBOX_NOSELECT },
+		{ "Other Users.1aa.INBOX", 0 },
+		{ "Other Users.1aa.Trash", IMAP_MAILBOX_TRASH },
+		{ "Other Users.1aa.foo", 0 },
+		{ "Other Users.1bb", IMAP_MAILBOX_NOSELECT },
+		{ "Other Users.1bb.INBOX", 0 },
+		{ "Other Users.1bb.Trash", IMAP_MAILBOX_TRASH },
+		{ "Other Users.1bb.foo", 0 },
+		{ "Other Users.2.foo", 0 },
+		{ "Other Users.2.INBOX", 0 },
+		{ "Other Users.2.[Gmail]", 0 },
+		{ "Other Users.2.[Gmail].Trash", IMAP_MAILBOX_TRASH },
+	};
+
+	/* Seed the test data */
+	struct mailbox_ref **mb_names = malloc(sizeof(struct mailbox_ref*) * ARRAY_LEN(mailboxes));
+	assert(mb_names != NULL);
+	client->delimiter = '.';
+	global_mb_names = mb_names;
+	for (i = 0; i < ARRAY_LEN(mailboxes); i++) {
+		mb_names[i] = calloc(1, sizeof(struct mailbox_ref));
+		assert(mb_names != NULL);
+		mb_names[i]->name = mailboxes[i].name;
+		mb_names[i]->flags = mailboxes[i].flags;
+		client->num_mailboxes++;
+	}
+
+	/* Run tests */
+#define FOLDER_SORT_ORDER_EXPECT(f1, cmp, f2) { \
+	struct mailbox_ref *r1 = find_mailbox_ref(client, f1); \
+	struct mailbox_ref *r2 = find_mailbox_ref(client, f2); \
+	assert(r1 != NULL); \
+	assert(r2 != NULL); \
+	assert(r1->name != NULL); \
+	assert(__mailbox_name_cmp(client, r1, r2, 1) == (cmp == '<' ? -1 : 1)); \
+}
+
+	FOLDER_SORT_ORDER_EXPECT("INBOX", '<', "Drafts");
+	FOLDER_SORT_ORDER_EXPECT("Drafts", '<', "Trash");
+	FOLDER_SORT_ORDER_EXPECT("aa", '<', "bb");
+	FOLDER_SORT_ORDER_EXPECT("aa", '<', "dd");
+	FOLDER_SORT_ORDER_EXPECT("Trash.foo", '<', "aa");
+	FOLDER_SORT_ORDER_EXPECT("Other Users.1aa", '>', "dd");
+	FOLDER_SORT_ORDER_EXPECT("Other Users.1aa.INBOX", '>', "dd");
+	FOLDER_SORT_ORDER_EXPECT("Other Users.1aa.INBOX", '>', "Other Users.1aa");
+	FOLDER_SORT_ORDER_EXPECT("Other Users.1bb.INBOX", '>', "Other Users.1bb");
+	FOLDER_SORT_ORDER_EXPECT("Other Users.1bb", '>', "Other Users.1aa.foo");
+	FOLDER_SORT_ORDER_EXPECT("Other Users.2.[Gmail]", '<', "Other Users.2.[Gmail].Trash");
+
+	/* Currently, Other Users...INBOX is not expected to sort first within its sub-mailbox,
+	 * so we don't test that */
+
+	/* Cleanup */
+	for (i = 0; i < ARRAY_LEN(mailboxes); i++) {
+		free(mb_names[i]);
+	}
+	free(mb_names);
+	return 0;
+}
+#endif /* TEST_MODE */
 
 static inline int mailbox_has_direct_parent(struct mailbox_ref **restrict mb_names, const char *restrict mb, int num_mailboxes, char delim, char *restrict parent, size_t parentlen)
 {
@@ -721,7 +851,9 @@ static struct mailbox_ref **populate_mailboxes(struct client *client, clist *ima
 		client->num_mailboxes++;
 	}
 
+	global_mb_names = mb_names;
 	qsort_r(mb_names, client->num_mailboxes, sizeof(struct mailbox_ref *), mailbox_name_cmp, client);
+	global_mb_names = NULL;
 
 	/* mb_names is now sorted */
 	return mb_names;
@@ -735,6 +867,12 @@ static int __client_list(struct client *client)
 	/* This is a single-threaded application, so there is no concurrency risk to making this static/global,
 	 * and it's probably better to put such a large buffer in the global segment rather than on the stack. */
 	static char list_status_buf[32768]; /* Hopefully big enough to fit the entire LIST-STATUS response */
+
+#ifdef TEST_MODE
+	if (test_cmp(client)) {
+		return -1;
+	}
+#endif
 
 	client_status("Querying mailbox list");
 
