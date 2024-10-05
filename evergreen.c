@@ -896,6 +896,71 @@ int __poll_input(struct client *client, struct pollfd *pfds, int mpanevisible, m
 	}
 }
 
+/*!
+ * \brief Read line of input from console (null-terminated)
+ * \retval -1, 0, 1, 2 (truncation), KEY_RESIZE, KEY_ESCAPE
+ * \note Stop idling before calling this function
+ */
+static int term_getline(struct client *client, int timeout, const char *title, char *startpos, char *buf, size_t len)
+{
+	char statusbuf[273]; /* min required to compile */
+	struct pollfd pfd;
+	char *start = buf;
+
+	buf = startpos;
+	pfd.fd = STDIN_FILENO;
+	pfd.events = POLLIN;
+
+	for (;;) {
+		ssize_t res;
+
+		snprintf(statusbuf, sizeof(statusbuf), "%s: %s", title, start);
+		client_set_status_nout(client, statusbuf);
+		doupdate();
+
+		res = poll(&pfd, 1, timeout);
+		if (res < 0) {
+			if (errno != EINTR) {
+				client_debug(0, "poll failed: %s", strerror(errno));
+				return -1;
+			}
+		} else if (!res) {
+			return 0;
+		} else if (pfd.revents & POLLIN) {
+			/* Activity on STDIN */
+			int c = getch();
+			if (c == ERR) {
+				client_warning("getch returned ERR");
+				return -1;
+			} else if (c == KEY_RESIZE || c == KEY_ESCAPE) {
+				return c;
+			} else if (isalnum(c)) {
+				*buf++ = c;
+				*buf = '\0';
+				if (--len <= 1) {
+					return 2;
+				}
+			} else if (c == KEY_BACKSPACE) {
+				if (buf > start) {
+					*(--buf) = '\0';
+					len++;
+				} else {
+					beep();
+				}
+			} else if (c == 10 || c == 13) {
+				*buf = '\0';
+				return 1;
+			} else {
+				client_debug(7, "Input received: %d", c);
+				beep();
+			}
+		} else {
+			client_error("Poll returned activity, but no activity?");
+			return -1;
+		}
+	}
+}
+
 int show_help_menu(struct client *client, struct pollfd *pfds, enum help_types help_types)
 {
 #define MAX_HELP_ITEMS 64
@@ -1542,6 +1607,53 @@ static int client_menu(struct client *client)
 				client_set_status(client, "Select mailbox to show info");
 			}
 			break;
+		case KEY_IC:
+			if (FOCUSED(client, FOCUS_FOLDERS)) {
+				/* Create new folder */
+				int retval;
+				char newfolder[256];
+				int len;
+				ITEM *selection = current_item(client->folders.menu);
+				int selected_item = item_index(selection);
+				/* Create full folder name here,
+				 * this solves the problem of should INSERT create a folder at the current hierarchy or a subfolder?
+				 * Can't do both at once!
+				 * So default to subfolder, but allow that to be changed. */
+				len = snprintf(newfolder, sizeof(newfolder), "%s%c", client->mailboxes[selected_item].name, client->delimiter);
+				if (client_idle_stop(client)) {
+					return -1;
+				}
+				retval = term_getline(client, 60000, "New folder name", newfolder + len, newfolder, sizeof(newfolder));
+				switch (retval) {
+					case KEY_ESCAPE:
+						client_set_status(client, "CREATE operation cancelled");
+						break;
+					case KEY_RESIZE:
+						goto resize;
+					case 0:
+						client_set_status(client, "CREATE aborted due to timeout");
+						break;
+					case 1:
+						/* Got a folder name */
+						client_debug(1, "Creating folder '%s'", newfolder);
+						if (client_create(client, newfolder)) {
+							client_set_status(client, "CREATE failed");
+							beep();
+							break;
+						}
+						goto redraw;
+					case 2:
+						client_set_status(client, "Folder name too long!");
+						break;
+					default:
+						client_debug(1, "Unexpected return value %d", retval);
+						/* Fall through */
+					case -1:
+						return -1;
+				}
+				break;
+			}
+			/* Fall through */
 		case 'n': /* Compose new message */
 			if (FOCUSED(client, FOCUS_FOLDERS)) {
 				/*! \todo Could make it create a new mailbox */
@@ -1553,6 +1665,109 @@ static int client_menu(struct client *client)
 				goto redraw; /* Redraw, leaving status bar intact */
 			}
 			break;
+		case KEY_DL: /* Same as 't' for message pane, but not for folder pane */
+			if (FOCUSED(client, FOCUS_FOLDERS)) {
+				char msgbuf[256];
+				int confirmation = 0;
+				/* Delete this mailbox */
+				ITEM *selection = current_item(client->folders.menu);
+				int selected_item = item_index(selection);
+				if (client->mailboxes[selected_item].flags & IMAP_MAILBOX_NOSELECT) {
+					client_set_status_nout(client, "Can't delete NoSelect mailboxes");
+					beep();
+					doupdate();
+					break;
+				}
+
+				if (client->sel_mbox == &client->mailboxes[selected_item]) {
+					/* Don't allow deleting the currently selected mailbox. */
+					client_set_status_nout(client, "Can't delete currently selected mailbox");
+					beep();
+					doupdate();
+					break;
+				} else if (!client->trash_mbox) {
+					client_set_status_nout(client, "Can't auto-determine trash mailbox");
+					beep();
+					doupdate();
+					break;
+				}
+
+				/* This is an extremely destructive operation.
+				 * Make doubly, triply sure that the user really means to do this. */
+				snprintf(msgbuf, sizeof(msgbuf), "%s %s? (Y/n)", "Really delete mailbox", client->mailboxes[selected_item].name);
+				client_set_status_nout(client, msgbuf);
+				beep();
+				doupdate();
+				do {
+					c = poll_input(client, pfds, 0);
+					switch (c) {
+					case 'Q':
+					case -1:
+					case 'q':
+						return 0;
+					case 'n':
+					case KEY_ESCAPE:
+						confirmation = -1;
+						break;
+					case 'y':
+						client_set_status(client, "Press capital Y to confirm!");
+						break;
+					case 'Y':
+						confirmation = 1;
+						break;
+					case KEY_RESIZE:
+						goto resize;
+					default:
+						break;
+					}
+				} while (!confirmation);
+
+				if (confirmation != 1) {
+					/* Delete cancelled */
+					client_set_status(client, "Delete operation cancelled");
+					break;
+				}
+
+				/* Actually "delete" */
+				if (client_idle_stop(client)) {
+					return -1;
+				}
+				if (!strncmp(client->mailboxes[selected_item].name, client->trash_mbox->name, strlen(client->trash_mbox->name))) {
+					/* This mailbox name starts with the trash folder's name.
+					 * This means it was already moved to the trash as part of the "soft delete".
+					 * Now, it's time for the "hard delete". */
+					if (client_delete(client, &client->mailboxes[selected_item])) {
+						client_set_status(client, "DELETE failed");
+						beep();
+						break;
+					}
+				} else {
+					char new_mailbox[512];
+					const char *orig_name_suffix;
+					/* What most mail clients do at this point is move the mailbox to the Trash folder (as a child mailbox).
+					 * This gives users another chance to undo this if it's a mistake, and deleting it again from the trash
+					 * is pretty clearly deliberate. */
+					orig_name_suffix = strrchr(client->mailboxes[selected_item].name, client->delimiter);
+					if (orig_name_suffix) {
+						orig_name_suffix++;
+						if (strlen_zero(orig_name_suffix)) {
+							client_warning("Mailbox name '%s' ends in hierarchy delimiter?", client->mailboxes[selected_item].name);
+							return -1;
+						}
+					} else { /* else, it's at the top level, suffix is the whole name */
+						orig_name_suffix = client->mailboxes[selected_item].name;
+					}
+					snprintf(new_mailbox, sizeof(new_mailbox), "%s%c%s", client->trash_mbox->name, client->delimiter, orig_name_suffix);
+					if (client_rename(client, &client->mailboxes[selected_item], new_mailbox)) {
+						/* Would be nice to include the actual IMAP error here, but I don't think libetpan lets us do that */
+						client_set_status(client, "RENAME failed");
+						beep();
+						break;
+					}
+				}
+				goto redraw;
+			}
+			/* Fall through */
 		case 'u': /* Mark unread */
 		case 's': /* Mark seen */
 		case 'F': /* Toggle flagged/unflagged */
@@ -1566,7 +1781,6 @@ static int client_menu(struct client *client)
 		case 'l': /* Display last destination mailbox */
 		case 'j': /* Move to junk */
 		case 't': /* Move to trash */
-		case KEY_DL: /* Same as 't' */
 			if (FOCUSED(client, FOCUS_FOLDERS)) {
 				beep(); /* Invalid for folders */
 			} else { /* FOCUS_MESSAGES */

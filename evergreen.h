@@ -451,6 +451,15 @@ int client_status_command(struct client *client, struct mailbox *mbox, char *res
 /*! \brief IMAP SELECT */
 int client_select(struct client *client, struct mailbox *mbox);
 
+/*! \brief IMAP CREATE */
+int client_create(struct client *client, const char *name);
+
+/*! \brief IMAP DELETE */
+int client_delete(struct client *client, struct mailbox *mbox);
+
+/*! \brief IMAP RENAME */
+int client_rename(struct client *client, struct mailbox *mbox, const char *newname);
+
 /*! \brief Associate a keyword with a message */
 void message_add_keyword(struct mailbox *mbox, struct message *msg, const char *keyword);
 

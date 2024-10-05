@@ -37,6 +37,25 @@ static inline void free_mailbox_keywords(struct mailbox *mbox)
 	}
 }
 
+static void free_mailboxes(struct mailbox *mailboxes, int num_mailboxes)
+{
+	int i;
+	for (i = 0; i < num_mailboxes; i++) {
+		free_mailbox_keywords(&mailboxes[i]);
+		free_if(mailboxes[i].name);
+	}
+	free(mailboxes);
+}
+
+static void cleanup_mailboxes(struct client *client)
+{
+	/* Free mailbox structures */
+	if (client->mailboxes) {
+		free_mailboxes(client->mailboxes, client->num_mailboxes);
+		client->mailboxes = NULL;
+	}
+}
+
 void client_destroy(struct client *client)
 {
 	if (client->idling) {
@@ -45,16 +64,7 @@ void client_destroy(struct client *client)
 	}
 	mailimap_logout(client->imap);
 	mailimap_free(client->imap);
-
-	/* Free mailbox structures */
-	if (client->mailboxes) {
-		int i;
-		for (i = 0; i < client->num_mailboxes; i++) {
-			free_mailbox_keywords(&client->mailboxes[i]);
-			free_if(client->mailboxes[i].name);
-		}
-		free(client->mailboxes);
-	}
+	cleanup_mailboxes(client);
 }
 
 static int client_load_capabilities(struct client *client)
@@ -763,7 +773,9 @@ static int __client_list(struct client *client)
 			return -1;
 		}
 
-		/* This does mean we won't see new mailboxes created at runtime */
+		/* This does mean we won't see new mailboxes created at runtime,
+		 * which is fine since most mail clients wouldn't know anyways,
+		 * without the user triggering a LIST/LSUB command. */
 		client->num_mailboxes++; /* Plus one for aggregate stats */
 		client->mailboxes = calloc(client->num_mailboxes, sizeof(struct mailbox));
 		if (!client->mailboxes) {
@@ -1020,6 +1032,15 @@ static struct mailbox *find_specialuse_mailbox(struct client *client, int flag, 
 	return best;
 }
 
+static void select_set_mailboxes(struct client *client, struct mailbox *mbox)
+{
+	client->sel_mbox = mbox;
+	client->trash_mbox = find_specialuse_mailbox(client, IMAP_MAILBOX_TRASH, "Trash");
+	client->junk_mbox = find_specialuse_mailbox(client, IMAP_MAILBOX_JUNK, "Junk");
+	client->sent_mbox = find_specialuse_mailbox(client, IMAP_MAILBOX_SENT, "Sent");
+	client->draft_mbox = find_specialuse_mailbox(client, IMAP_MAILBOX_DRAFTS, "Drafts");
+}
+
 int client_select(struct client *client, struct mailbox *mbox)
 {
 	int res;
@@ -1116,12 +1137,132 @@ int client_select(struct client *client, struct mailbox *mbox)
 	}
 
 	client_status("Selected '%s'", mbox->name);
-	client->sel_mbox = mbox;
-	client->trash_mbox = find_specialuse_mailbox(client, IMAP_MAILBOX_TRASH, "Trash");
-	client->junk_mbox = find_specialuse_mailbox(client, IMAP_MAILBOX_JUNK, "Junk");
-	client->sent_mbox = find_specialuse_mailbox(client, IMAP_MAILBOX_SENT, "Sent");
-	client->draft_mbox = find_specialuse_mailbox(client, IMAP_MAILBOX_DRAFTS, "Drafts");
+	select_set_mailboxes(client, mbox);
 	return 0;
+}
+
+/*! \brief Completely replace client->mailboxes array with a new array reflecting the new set of mailboxes on the server */
+static int merge_mailboxes_helper(struct client *client, const char *oldname, const char *newname)
+{
+#ifdef OPTIMIZE_CREATE_DELETE_RENAME_OPERATIONS
+	struct mailbox *new_mailboxes;
+	int new_num_mailboxes;
+
+	/* The complication with CREATE/DELETE/RENAME operations is that evergreen uses an array, not a linked list, to keep track of mailboxes.
+	 * This makes certain operations more efficient, but it also means that any time a mailbox is added,
+	 * removed, or renamed, we need to rebuild the entire array
+	 * (and it's not just a rename, since the ordering could well change, too).
+	 * So, these operations are expensive, but in a normal user session will occur rarely, if ever.
+	 *
+	 * While the lazy and easy thing to do would be to just reset the mailboxes struct and start over
+	 * by issuing another LIST operation, this can be time-consuming, so it's not super efficient. */
+
+	/* Start by determining the size of the new array */
+	new_num_mailboxes = client->num_mailboxes;
+	if (!oldname) {
+		new_num_mailboxes++; /* CREATE */
+	} else if (!newname) {
+		new_num_mailboxes--; /* DELETE */
+		assert(new_num_mailboxes > 0); /* Since we don't allow deleting the currently selected mailbox, should be positive no matter what */
+	} /* else, rename, no change in counts */
+
+	/* Now, duplicate the old mailboxes structure into the new one.
+	 * For CREATE, we insert the new mailbox at the appropriate place (as if we got a LIST response for it)
+	 * For DELETE, we simply skip the now nonexistent mailbox.
+	 * For RENAME, we effectively do both, skipping it at the old location and inserting at the new one. */
+
+	/*! \todo Implement this */
+
+#else
+	/* Take the easy way out...
+	 * The one advantage of this approach is it should always be accurate.
+	 * Even if the IMAP server said a mailbox was deleted when it really wasn't,
+	 * issuing another LIST should catch that. */
+	(void) oldname;
+	(void) newname;
+
+	cleanup_mailboxes(client);
+	client_list(client);
+	return 0;
+#endif
+}
+
+static struct mailbox *find_mailbox_by_name(struct client *client, const char *name)
+{
+	int i;
+	for (i = 0; i < client->num_mailboxes; i++) {
+		if (!strcmp(client->mailboxes[i].name, name)) {
+			return &client->mailboxes[i];
+		}
+	}
+	return NULL;
+}
+
+/*! \brief Replace the mailboxes array and all mailbox pointers */
+static int reconstruct_mailboxes(struct client *client, const char *oldname, const char *newname)
+{
+	char selected_mailbox[256];
+	int was_selected = 0;
+	int flags;
+	uint32_t uidnext = 0, uidvalidity = 0, total = 0, recent = 0; /* Can't be used uninitialized, but make gcc happy */
+
+	if (client->sel_mbox) {
+		/* Save info about the currently selected mailbox,
+		 * before we destroy all our mailboxes. */
+		safe_strncpy(selected_mailbox, client->sel_mbox->name, sizeof(selected_mailbox));
+		uidnext = client->sel_mbox->uidnext;
+		uidvalidity = client->sel_mbox->uidvalidity;
+		total = client->sel_mbox->total;
+		recent = client->sel_mbox->recent;
+		flags = client->sel_mbox->flags;
+		was_selected = 1;
+		client->sel_mbox = NULL;
+	}
+
+	if (merge_mailboxes_helper(client, oldname, newname)) {
+		return -1;
+	}
+
+	if (was_selected) {
+		/* Don't actually re-select the mailbox, as that's not necessary from an IMAP perspective,
+		 * and some servers may not take kindly to asking to re-SELECT the currently selected mailbox.
+		 * However, we do need to reconstruct our view of the selected mailbox. */
+		struct mailbox *mbox = find_mailbox_by_name(client, selected_mailbox);
+		assert(mbox != NULL);
+		select_set_mailboxes(client, mbox);
+		/* Also update the stats we saved off */
+		mbox->uidnext = uidnext;
+		mbox->uidvalidity = uidvalidity;
+		mbox->total = total;
+		mbox->recent = recent;
+		mbox->flags = flags;
+	}
+
+	return 0;
+}
+
+int client_create(struct client *client, const char *name)
+{
+	if (mailimap_create(client->imap, name)) {
+		return -1;
+	}
+	return reconstruct_mailboxes(client, NULL, name);
+}
+
+int client_delete(struct client *client, struct mailbox *mbox)
+{
+	if (mailimap_delete(client->imap, mbox->name)) {
+		return -1;
+	}
+	return reconstruct_mailboxes(client, mbox->name, NULL);
+}
+
+int client_rename(struct client *client, struct mailbox *mbox, const char *newname)
+{
+	if (mailimap_rename(client->imap, mbox->name, newname)) {
+		return -1;
+	}
+	return reconstruct_mailboxes(client, mbox->name, newname);
 }
 
 /* Note: We must deal with unsigned char for this func, which is why -funsigned-char is included in the build flags */
@@ -2394,17 +2535,6 @@ int client_idle_stop(struct client *client)
 		client->idling = 0;
 	}
 	return 0;
-}
-
-static struct mailbox *find_mailbox_by_name(struct client *client, const char *name)
-{
-	int i;
-	for (i = 0; i < client->num_mailboxes; i++) {
-		if (!strcmp(client->mailboxes[i].name, name)) {
-			return &client->mailboxes[i];
-		}
-	}
-	return NULL;
 }
 
 static char *quotesep(char **restrict str)
