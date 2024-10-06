@@ -49,6 +49,7 @@ static void free_mailboxes(struct mailbox *mailboxes, int num_mailboxes)
 	for (i = 0; i < num_mailboxes; i++) {
 		free_mailbox_keywords(&mailboxes[i]);
 		free_if(mailboxes[i].name);
+		free_if(mailboxes[i].display);
 	}
 	free(mailboxes);
 }

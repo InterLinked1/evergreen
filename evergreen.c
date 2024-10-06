@@ -446,6 +446,7 @@ static int rerender_folder_pane(struct client *client, int selected_item)
 
 	/* Create menu options for each mailbox, then create the menu */
 	if (create_folder_items(client) || create_folder_menu(client)) {
+		client_error("Failed to create folder items or menu");
 		return -1;
 	}
 
@@ -585,6 +586,7 @@ static int render_message_pane(struct client *client, int selected_item, uint32_
 	/* XXX In theory, we could just rebuild the items and then use set_menu_items to replace the menu's items
 	 * (still calling set_current_item), which would be more efficient than destroying/recreating the menu too. */
 	if (create_message_items(client) || create_messages_menu(client)) {
+		client_error("Failed to create message items or menu");
 		return -1;
 	}
 

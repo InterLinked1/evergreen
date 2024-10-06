@@ -121,10 +121,24 @@ void free_folder_items(struct client *client)
 			if (client->folders.items[i]) {
 				free_item(client->folders.items[i]);
 			}
-			free_if(client->mailboxes[i].display);
 		}
 		free(client->folders.items);
 		client->folders.items = NULL;
+	}
+	/* Iterate separately since client->num_mailboxes
+	 * may not be the same as client->folders.n at this point,
+	 * e.g. if a mailbox was completely deleted, and reconstruct_mailboxes
+	 * was called to recreate the mailboxes array with a different size,
+	 * the stale folder list contains more entries than there are mailboxes now.
+	 *
+	 * We also free the display name if needed in free_mailboxes,
+	 * but both are needed. If the mailbox array shrunk during the resize,
+	 * we'll take care of freeing that last index which now no longer exists.
+	 * However, free_folder_items may be called many times during execution,
+	 * not just when the mailboxes array is resized, and we still need
+	 * to free all the existing ones here before calling create_folder_items again. */
+	for (i = 0; i < client->num_mailboxes; i++) {
+		free_if(client->mailboxes[i].display);
 	}
 	client->folders.n = 0;
 }
