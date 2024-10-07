@@ -28,6 +28,12 @@
 
 #include <libetpan/libetpan.h>
 
+/* Smartly rebuilds the mailboxes array using existing data, for massive performance boost */
+#define OPTIMIZE_CREATE_DELETE_RENAME_OPERATIONS
+
+/* Uncomment to debug mailboxes merge when OPTIMIZE_CREATE_DELETE_RENAME_OPERATIONS is defined */
+/* #define DEBUG_MERGE */
+
 /* Uncomment to debug folder name sorting */
 /* #define DEBUG_FOLDER_ORDER */
 
@@ -570,11 +576,12 @@ static inline int mbox_name_cmp(const char *a, const char *b)
 }
 
 static struct mailbox_ref **global_mb_names; /* Hack to get access to all mailbox_ref's from __mailbox_name_cmp without adjusting the args for qsort */
+static int global_num_mb_names; /* Ditto */
 
-static struct mailbox_ref *find_mailbox_ref(struct client *client, const char *name)
+static struct mailbox_ref *find_mailbox_ref(const char *name)
 {
 	int i;
-	for (i = 0; i < client->num_mailboxes; i++) {
+	for (i = 0; i < global_num_mb_names; i++) {
 		if (!strcmp(global_mb_names[i]->name, name)) {
 			return global_mb_names[i];
 		}
@@ -613,11 +620,11 @@ static int __mailbox_name_cmp(struct client *client, struct mailbox_ref *a, stru
 			if (cmp_attrs) {
 				int score_a, score_b;
 				struct mailbox_ref *ra, *rb;
-				ra = find_mailbox_ref(client, parent_a);
-				rb = find_mailbox_ref(client, parent_b);
+				ra = find_mailbox_ref(parent_a);
+				rb = find_mailbox_ref(parent_b);
 				/* If it's a SPECIAL-USE mailbox, it ranks earlier */
 				if (!ra || !rb) {
-					client_error("ra = %p, rb = %p", ra, rb);
+					client_error("ra = %p (%s), rb = %p (%s)", ra, parent_a, rb, parent_b);
 					assert(ra != NULL);
 					assert(rb != NULL);
 				}
@@ -699,11 +706,12 @@ static int test_cmp(struct client *client)
 		mb_names[i]->flags = mailboxes[i].flags;
 		client->num_mailboxes++;
 	}
+	global_num_mb_names = client->num_mailboxes;
 
 	/* Run tests */
 #define FOLDER_SORT_ORDER_EXPECT(f1, cmp, f2) { \
-	struct mailbox_ref *r1 = find_mailbox_ref(client, f1); \
-	struct mailbox_ref *r2 = find_mailbox_ref(client, f2); \
+	struct mailbox_ref *r1 = find_mailbox_ref(f1); \
+	struct mailbox_ref *r2 = find_mailbox_ref(f2); \
 	assert(r1 != NULL); \
 	assert(r2 != NULL); \
 	assert(r1->name != NULL); \
@@ -853,8 +861,10 @@ static struct mailbox_ref **populate_mailboxes(struct client *client, clist *ima
 	}
 
 	global_mb_names = mb_names;
+	global_num_mb_names = client->num_mailboxes;
 	qsort_r(mb_names, client->num_mailboxes, sizeof(struct mailbox_ref *), mailbox_name_cmp, client);
 	global_mb_names = NULL;
+	global_num_mb_names = 0;
 
 	/* mb_names is now sorted */
 	return mb_names;
@@ -1280,12 +1290,79 @@ int client_select(struct client *client, struct mailbox *mbox)
 	return 0;
 }
 
+static inline void masquerade_mailbox(struct mailbox *restrict new_mbox, struct mailbox *restrict old_mbox)
+{
+	int i;
+
+#define STEAL_MBOX_FIELD(new, old) \
+	new = old; \
+	old = NULL;
+#define COPY_MBOX_FIELD(field) new_mbox->field = old_mbox->field
+
+	/* Copy over the old to the new.
+	 * We don't need to sort again, everything is already in order in the old array.
+	 * The only twist is figuring out where the new mailbox goes (if we're adding or renaming one).
+	 * For some of these, we can just steal the references to the previously allocated strings. */
+
+	STEAL_MBOX_FIELD(new_mbox->name, old_mbox->name);
+
+	/* Skip display, as that will get rebuilt anyways when the folder pane is recreated. */
+
+	for (i = 0; i < old_mbox->num_keywords && old_mbox->keywords[i]; i++) {
+		/* Steal the keyword references */
+		STEAL_MBOX_FIELD(new_mbox->keywords[i], old_mbox->keywords[i]);
+	}
+	COPY_MBOX_FIELD(flags);
+	COPY_MBOX_FIELD(unseen);
+	COPY_MBOX_FIELD(recent);
+	COPY_MBOX_FIELD(total);
+	COPY_MBOX_FIELD(size);
+	COPY_MBOX_FIELD(uidnext);
+	COPY_MBOX_FIELD(uidvalidity);
+	COPY_MBOX_FIELD(keywords_allowed);
+	COPY_MBOX_FIELD(num_keywords);
+#undef STEAL_MBOX_FIELD
+#undef COPY_MBOX_FIELD
+}
+
+static struct mailbox *find_mailbox_by_name(struct client *client, const char *name)
+{
+	int i;
+	for (i = 0; i < client->num_mailboxes; i++) {
+		if (!strcmp(client->mailboxes[i].name, name)) {
+			return &client->mailboxes[i];
+		}
+	}
+	return NULL;
+}
+
+/*! \note This is only used in one very specific case during merges,
+ * where old mailboxes could be NULL since they were masqueraded to the new,
+ * and in that case, it's not going to be what we're looking for only,
+ * because we're looking for a mailbox that hasn't been masqueraded yet. */
+static struct mailbox *find_mailbox_by_name2(struct client *client, const char *name)
+{
+	int i;
+	for (i = 0; i < client->num_mailboxes; i++) {
+		if (client->mailboxes[i].name && !strcmp(client->mailboxes[i].name, name)) {
+			return &client->mailboxes[i];
+		}
+	}
+	return NULL;
+}
+
 /*! \brief Completely replace client->mailboxes array with a new array reflecting the new set of mailboxes on the server */
 static int merge_mailboxes_helper(struct client *client, const char *oldname, const char *newname)
 {
 #ifdef OPTIMIZE_CREATE_DELETE_RENAME_OPERATIONS
 	struct mailbox *new_mailboxes;
 	int new_num_mailboxes;
+	int i, old_index, new_index;
+	struct mailbox_ref **mbrefs;
+	int max_mailboxes;
+	int encountered_old = 0, inserted_renamed = 0;
+	int looking = 2; /* 2 since we decrement twice for RENAME */
+	struct mailbox *orig_renamed_mbox = NULL;
 
 	/* The complication with CREATE/DELETE/RENAME operations is that evergreen uses an array, not a linked list, to keep track of mailboxes.
 	 * This makes certain operations more efficient, but it also means that any time a mailbox is added,
@@ -1309,8 +1386,149 @@ static int merge_mailboxes_helper(struct client *client, const char *oldname, co
 	 * For CREATE, we insert the new mailbox at the appropriate place (as if we got a LIST response for it)
 	 * For DELETE, we simply skip the now nonexistent mailbox.
 	 * For RENAME, we effectively do both, skipping it at the old location and inserting at the new one. */
+	new_mailboxes = calloc(new_num_mailboxes, sizeof(struct mailbox));
+	if (!new_mailboxes) {
+		return -1;
+	}
 
-	/*! \todo Implement this */
+	max_mailboxes = client->num_mailboxes + (!oldname || newname ? 1 : 0);
+	mbrefs = malloc(sizeof(struct mailbox_ref*) * max_mailboxes);
+	if (!mbrefs) {
+		free(new_mailboxes);
+		return -1;
+	}
+	/* mbrefs doesn't need to be ordered */
+	for (i = 0; i < client->num_mailboxes; i++) {
+		struct mailbox *old_mbox = &client->mailboxes[i];
+		/* Create mailbox_ref */
+		mbrefs[i] = malloc(sizeof(struct mailbox_ref) + strlen(old_mbox->name) + 1);
+		if (!mbrefs[i]) {
+			return -1; /* XXX Leaks */
+		}
+		strcpy(mbrefs[i]->data, old_mbox->name); /* Safe */
+		mbrefs[i]->name = mbrefs[i]->data;
+		mbrefs[i]->flags = old_mbox->flags;
+	}
+	if (!oldname || newname) {
+		/* CREATE or RENAME */
+		mbrefs[i] = malloc(sizeof(struct mailbox_ref) + strlen(newname) + 1);
+		if (!mbrefs[i]) {
+			return -1; /* XXX Leaks */
+		}
+		mbrefs[i]->name = newname;
+		mbrefs[i]->flags = 0;
+	}
+	global_mb_names = mbrefs;
+	global_num_mb_names = max_mailboxes;
+
+	for (old_index = 0, new_index = 0; new_index < new_num_mailboxes; old_index++, new_index++) {
+		struct mailbox *old_mbox, *new_mbox;
+		int cmp_res;
+
+		old_mbox = &client->mailboxes[old_index];
+		new_mbox = &new_mailboxes[new_index];
+
+		assert(old_mbox != NULL);
+		assert(new_mbox != NULL);
+
+		/* The first mailbox is "ALL" (not a real mailbox), which is always first */
+		if (old_index > 0 && looking) {
+			if (!oldname) {
+				/* CREATE */
+				cmp_res = __mailbox_name_cmp(client, mbrefs[old_index], mbrefs[max_mailboxes - 1], 1);
+				if (cmp_res == 1) {
+					/* It's time to insert the new mailbox */
+					looking = 0;
+					new_mbox->name = strdup(newname);
+					/* No flags that we know about */
+					old_index--; /* We inserted the new one here, not the old one, so back up */
+					continue;
+				}
+			} else if (!newname) {
+				/* DELETE */
+				if (!strcmp(old_mbox->name, oldname)) {
+					/* This is the mailbox that was deleted. Simply omit it. */
+					new_index--; /* continuing the loop will increment, so neutralize that */
+					looking = 0;
+					continue;
+				}
+			} else {
+				/* RENAME */
+				if (!encountered_old) {
+					assert(old_mbox->name != NULL);
+					if (!strcmp(old_mbox->name, oldname)) {
+						/* This is the old mailbox name, so skip it */
+						encountered_old = 1;
+						orig_renamed_mbox = old_mbox;
+						looking--;
+						client_debug(1, "XXX Encountered old, looking now %d", looking);
+						new_index--;
+						continue;
+					}
+				}
+				if (!inserted_renamed) {
+					/* newname will never be old_mbox->name, we need to insert it at the right spot */
+					cmp_res = __mailbox_name_cmp(client, mbrefs[old_index], mbrefs[max_mailboxes - 1], 1);
+					if (cmp_res == 1) {
+						inserted_renamed = 1;
+						looking--;
+						client_debug(1, "XXX Encountered new, looking now %d", looking);
+						/* Copy over all the details from the old mailbox */
+						if (!orig_renamed_mbox) {
+							/* If we haven't encountered it yet in the traversal, find it now */
+							orig_renamed_mbox = find_mailbox_by_name2(client, oldname);
+							assert(orig_renamed_mbox != NULL);
+						}
+						masquerade_mailbox(new_mbox, orig_renamed_mbox);
+						if (!encountered_old) {
+							orig_renamed_mbox->name = strdup(new_mbox->name); /* Restore the original mailbox name on the old, for the strcmp in !encountered_old block */
+						}
+						REPLACE(new_mbox->name, newname); /* Use the new name for the new one, not the original name */
+						assert(old_mbox->name != NULL);
+						assert(new_mbox->name != NULL);
+#ifdef DEBUG_MERGE
+						client_debug(3, "New/renamed mailbox '%s' now at index %d", new_mbox->name, new_index);
+#endif
+						old_index--; /* We inserted the new one here, not the old one, so back up */
+						continue;
+					}
+				}
+			}
+		}
+		assert(old_mbox != orig_renamed_mbox); /* This should've been caught above in the corresponding looking-- block */
+		masquerade_mailbox(new_mbox, old_mbox);
+		if (!encountered_old) {
+			REPLACE(old_mbox->name, new_mbox->name); /* Restore the original mailbox name on the old, for the strcmp in !encountered_old block */
+		}
+#ifdef DEBUG_MERGE
+		client_debug(3, "Mailbox '%s' now at index %d", new_mbox->name, new_index);
+#endif
+		if (!new_mailboxes[new_index].name) {
+			client_error("index %d is null", new_index);
+		}
+		assert(new_mailboxes[new_index].name != NULL);
+	}
+
+	/* Clean up helper data */
+	global_mb_names = NULL;
+	global_num_mb_names = 0;
+	for (old_index = 0; old_index < max_mailboxes; old_index++) {
+		free_if(mbrefs[old_index]);
+	}
+	free(mbrefs);
+
+	/* Actually swap the old out for the new */
+	cleanup_mailboxes(client);
+	client->mailboxes = new_mailboxes;
+	client->num_mailboxes = new_num_mailboxes;
+
+	/* Final sanity checks */
+	for (new_index = 0; new_index < client->num_mailboxes; new_index++) {
+		if (!client->mailboxes[new_index].name) {
+			client_error("index %d is null", new_index);
+		}
+		assert(client->mailboxes[new_index].name != NULL);
+	}
 
 #else
 	/* Take the easy way out...
@@ -1322,19 +1540,8 @@ static int merge_mailboxes_helper(struct client *client, const char *oldname, co
 
 	cleanup_mailboxes(client);
 	client_list(client);
-	return 0;
 #endif
-}
-
-static struct mailbox *find_mailbox_by_name(struct client *client, const char *name)
-{
-	int i;
-	for (i = 0; i < client->num_mailboxes; i++) {
-		if (!strcmp(client->mailboxes[i].name, name)) {
-			return &client->mailboxes[i];
-		}
-	}
-	return NULL;
+	return 0;
 }
 
 /*! \brief Replace the mailboxes array and all mailbox pointers */
@@ -1342,8 +1549,21 @@ static int reconstruct_mailboxes(struct client *client, const char *oldname, con
 {
 	char selected_mailbox[256];
 	int was_selected = 0;
-	int flags;
+	int flags = 0; /* Can't be used uninitialized, but make gcc happy */
+	char oldnamebuf[256];
+	char newnamebuf[256];
 	uint32_t uidnext = 0, uidvalidity = 0, total = 0, recent = 0; /* Can't be used uninitialized, but make gcc happy */
+
+	/* oldname and newname are references on the mailbox struct, so will get modified as merge_mailboxes_helper runs.
+	 * Duplicate them so the arguments don't change as the function executes. */
+	if (oldname) {
+		safe_strncpy(oldnamebuf, oldname, sizeof(oldnamebuf));
+		oldname = oldnamebuf;
+	}
+	if (newname) {
+		safe_strncpy(newnamebuf, newname, sizeof(newnamebuf));
+		newname = newnamebuf;
+	}
 
 	if (client->sel_mbox) {
 		/* Save info about the currently selected mailbox,
