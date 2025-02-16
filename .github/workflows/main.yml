@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, dev ]
   pull_request:
     branches: [ master ]
 
@@ -81,6 +81,25 @@ jobs:
           cd ..
           git clone https://github.com/InterLinked1/lbbs.git
           cd lbbs
+          scripts/libetpan.sh
+          cd ../evergreen
+          make
+          make install
+  alpine-linux:
+    runs-on: ubuntu-latest
+    name: Alpine Linux
+    container: alpine:latest
+    steps:
+     - name: Checkout
+       uses: actions/checkout@v4
+     - name: Start build
+       run: |
+          apk update
+          apk add git gcc make autoconf automake pkgconf libtool m4 build-base ncurses-dev
+          cd ..
+          git clone https://github.com/InterLinked1/lbbs.git
+          cd lbbs
+          mkdir /usr/local/src
           scripts/libetpan.sh
           cd ../evergreen
           make

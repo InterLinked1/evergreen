@@ -25,7 +25,7 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <assert.h>
-#include <wait.h>
+#include <sys/wait.h>
 #include <search.h>
 
 struct pager {
