@@ -104,3 +104,22 @@ jobs:
           cd ../evergreen
           make
           make install
+  freebsd-14:
+    runs-on: ubuntu-24.04
+    name: FreeBSD
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build LBBS
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          run: |
+            pkg install -y git gcc gmake autoconf automake pkgconf libtool m4 ncurses wget
+            cd ..
+            git clone https://github.com/InterLinked1/lbbs.git
+            cd lbbs
+            mkdir /usr/local/src
+            scripts/libetpan.sh
+            cd ../evergreen
+            gmake
+            gmake install
