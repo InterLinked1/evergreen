@@ -24,6 +24,9 @@ $(EXE): $(MAIN_OBJ)
 %.o : %.c
 	$(CC) $(CFLAGS) -c -funsigned-char -Wno-format-y2k $(NCURSES_FLAGS) $(ETPAN_FLAGS) $^
 
+anyascii.o : anyascii.c
+	$(CC) $(CFLAGS) -c -Wno-unterminated-string-initialization $^
+
 evergreen.o : evergreen.c
 	$(CC) $(CFLAGS) -c -funsigned-char -fno-stack-protector -Wno-format-y2k $(NCURSES_FLAGS) $(ETPAN_FLAGS) $^
 

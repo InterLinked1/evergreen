@@ -104,6 +104,24 @@ jobs:
           cd ../evergreen
           make
           make install
+  archlinux:
+    runs-on: ubuntu-24.04
+    name: Arch Linux
+    container: archlinux:latest
+    steps:
+     - name: Checkout
+       uses: actions/checkout@v4
+     - name: Start build
+       run: |
+          pacman -Syu --noconfirm
+          pacman -Sy --noconfirm git make patch gawk gcc pkg-config autoconf automake m4 libtool libnewt wget
+          cd ..
+          git clone https://github.com/InterLinked1/lbbs.git
+          cd lbbs
+          scripts/libetpan.sh
+          cd ../evergreen
+          make
+          make install
   freebsd-14:
     runs-on: ubuntu-24.04
     name: FreeBSD

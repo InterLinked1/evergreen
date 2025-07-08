@@ -1461,7 +1461,6 @@ static int merge_mailboxes_helper(struct client *client, const char *oldname, co
 						encountered_old = 1;
 						orig_renamed_mbox = old_mbox;
 						looking--;
-						client_debug(1, "XXX Encountered old, looking now %d", looking);
 						new_index--;
 						continue;
 					}
@@ -1472,7 +1471,6 @@ static int merge_mailboxes_helper(struct client *client, const char *oldname, co
 					if (cmp_res == 1) {
 						inserted_renamed = 1;
 						looking--;
-						client_debug(1, "XXX Encountered new, looking now %d", looking);
 						/* Copy over all the details from the old mailbox */
 						if (!orig_renamed_mbox) {
 							/* If we haven't encountered it yet in the traversal, find it now */
