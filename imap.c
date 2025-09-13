@@ -387,7 +387,7 @@ static void list_status_logger(mailstream *imap_stream, int log_type, const char
 		return;
 	}
 
-	/* Can be broken up across multiple log callback calls, so append to a dynstr */
+	/* Can be broken up across multiple log callback calls */
 	client_debug(6, "Log callback of %lu bytes for LIST-STATUS", size);
 	/* Since this can take quite a bit of time, send an update here */
 	/* Look for "* STATUS " */
@@ -875,6 +875,7 @@ static int __client_list(struct client *client)
 	clist *imap_list;
 	int res, i;
 	int needunselect = 0;
+	int numother = 0;
 	/* This is a single-threaded application, so there is no concurrency risk to making this static/global,
 	 * and it's probably better to put such a large buffer in the global segment rather than on the stack. */
 	static char list_status_buf[32768]; /* Hopefully big enough to fit the entire LIST-STATUS response */
@@ -956,6 +957,10 @@ static int __client_list(struct client *client)
 			client->delimiter = mb_list->mb_delimiter;
 			client->mailboxes[i].name = strdup(name);
 
+			if (IMAP_HAS_CAPABILITY(client, IMAP_CAPABILITY_NOTIFY) && !strncmp(name, "Other Users.", STRLEN("Other Users."))) {
+				numother++;
+			}
+
 			if (client->mailboxes[i].flags & IMAP_MAILBOX_NOSELECT) {
 				continue;
 			}
@@ -1017,6 +1022,53 @@ static int __client_list(struct client *client)
 			free(mb_names[i]);
 		}
 		free(mb_names);
+	}
+
+	if (IMAP_HAS_CAPABILITY(client, IMAP_CAPABILITY_NOTIFY)) {
+		char cmd[2048];
+		char buf[sizeof(cmd) - 147];
+		int bytes = 0;
+		int otherinboxonly = numother > 10;
+
+#define OTHER_USERS_WATCHALL_THRESHOLD 25
+
+		if (numother > OTHER_USERS_WATCHALL_THRESHOLD) {
+			clistiter *cur;
+			for (cur = clist_begin(imap_list); cur; cur = clist_next(cur)) {
+				struct mailimap_mailbox_list *mb_list = clist_content(cur);
+				const char *name = mb_list->mb_name;
+				if (!strncmp(name, "Other Users.", STRLEN("Other Users."))) {
+					if (otherinboxonly && !strcasestr(name, "INBOX")) {
+						continue;
+					}
+				} else if (!strncmp(name, "Shared Folders.", STRLEN("Shared Folders."))) {
+					if (!strcasestr(name, "INBOX")) {
+						continue;
+					}
+				} else {
+					continue; /* Personal namespace */
+				}
+				bytes += snprintf(buf + bytes, sizeof(buf) - bytes, " %c%s%c", '"', name, '"');
+				if ((size_t) bytes >= sizeof(buf)) {
+					client_warning("Truncation occured when building NOTIFY command");
+					break;
+				}
+			}
+		}
+
+		/* We just want notifications when something happens, having an untagged FETCH sent to us isn't that important.
+		 * We can wake up and do some work if really needed. */
+		if (bytes > 0 && (size_t) bytes <= sizeof(buf)) {
+			snprintf(cmd, sizeof(cmd), "NOTIFY SET (SELECTED-DELAYED (MessageNew MessageExpunge FlagChange)) %s(personal (MessageNew MessageExpunge)) (mailboxes%s (MessageNew MessageExpunge))",
+				numother <= OTHER_USERS_WATCHALL_THRESHOLD ? "(subtree \"Other Users\" (MessageNew MessageExpunge FlagChange))" : "",
+				buf);
+		} else {
+			snprintf(cmd, sizeof(cmd), "NOTIFY SET (SELECTED-DELAYED (MessageNew MessageExpunge FlagChange)) (personal (MessageNew MessageExpunge))%s", numother ? " (subtree \"Other Users\" (MessageNew MessageExpunge))" : "");
+		}
+		res = mailimap_custom_command(client->imap, cmd);
+		if (MAILIMAP_ERROR(res)) {
+			client_warning("NOTIFY SET failed\n");
+		}
 	}
 
 	if (needunselect) {
@@ -1325,11 +1377,29 @@ static inline void masquerade_mailbox(struct mailbox *restrict new_mbox, struct 
 #undef COPY_MBOX_FIELD
 }
 
+static int str_case_ends_with(const char *str, const char *suffix)
+{
+	size_t str_len;
+	size_t suffix_len;
+
+	str_len = strlen(str);
+	suffix_len = strlen(suffix);
+
+	return str_len >= suffix_len && !strcasecmp(str + str_len - suffix_len, suffix);
+}
+
 static struct mailbox *find_mailbox_by_name(struct client *client, const char *name)
 {
 	int i;
 	for (i = 0; i < client->num_mailboxes; i++) {
+		/* In IMAP, mailbox names are case-sensitive...
+		 * (even though most server implementations are case-insensitive, we can't assume that) */
 		if (!strcmp(client->mailboxes[i].name, name)) {
+			return &client->mailboxes[i];
+		}
+		/* ... except for INBOX (RFC 3501 5.1)
+		 * We do case-insensitive matches for INBOX, as well as any subfolder named "INBOX". */
+		if ((!strcasecmp(name, "INBOX") || str_case_ends_with(name, ".INBOX")) && !strcasecmp(client->mailboxes[i].name, name)) {
 			return &client->mailboxes[i];
 		}
 	}
