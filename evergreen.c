@@ -14,10 +14,11 @@
  * \note Supports the following features and functionality:
  *
  * IMAP
- * - RFC 2177 IDLE
+ * - RFC 2177 IDLE and RFC 5465 NOTIFY
  * - Stores \Answered and $Forwarded flags
  * - Save and resume drafts
  * - Message forwarding
+ * - Mailbox creation and deletion
  *
  * SMTP
  * - RFC 1870 SIZE declaration
@@ -43,8 +44,7 @@
  * - Honoring read receipts (configurable)
  * - Full attachment support (upload from disk, download/view attachments, forward message with its attachments)
  *      Ability to do disk operations (upload/download) needs to be disableable by a runtime flag, for restricted environments.
- * - IMAP NOTIFY + periodically issue STATUS for all mailboxes
- * - Create/delete/move mailboxes
+ * - Move (rename) mailboxes
  * - BURL IMAP support
  * - NNTP support?
  */
