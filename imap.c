@@ -283,44 +283,51 @@ static void parse_status(struct client *client, struct mailbox *mbox, char *rest
 		return;
 	}
 
-	str = strstr(tmp, "MESSAGES ");
-	if (str) {
-		str += STRLEN("MESSAGES ");
-		if (!strlen_zero(str)) {
-			mbox->total = (uint32_t) atol(str);
-		}
-	} else if (expect_full) {
-		client_warning("Failed to parse MESSAGES");
+/* Helper macro from LBBS mod_webmail.c */
+/* Note: if var, *var = num doesn't work, because that would could be if NULL, *NULL = num.
+ * Since only messages requires the var argument, that case is just hardcoded to compile.
+ * The other checks should boil down to if (NULL) and be optimized out by the compiler. */
+#define PARSE_STATUS_ITEM(item, respitem) \
+	str = strstr(tmp, item " "); \
+	if (str) { \
+		str += STRLEN(item " "); \
+		if (!strlen_zero(str)) { \
+			mbox->respitem = (uint32_t) atol(str); \
+		} \
+	} else if (expect_full) { \
+		client_warning("Failed to parse " item ""); \
 	}
-	str = strstr(tmp, "RECENT ");
-	if (str) {
-		str += STRLEN("RECENT ");
-		if (!strlen_zero(str)) {
-			mbox->recent = (uint32_t) atol(str);
-		}
-	} else if (expect_full) {
-		client_warning("Failed to parse RECENT");
-	}
-	str = strstr(tmp, "UNSEEN ");
-	if (str) {
-		str += STRLEN("UNSEEN ");
-		if (!strlen_zero(str)) {
-			mbox->unseen = (uint32_t) atol(str);
-		}
-	} else if (expect_full) {
-		client_warning("Failed to parse UNSEEN");
-	}
+
+	PARSE_STATUS_ITEM("MESSAGES", total);
+	PARSE_STATUS_ITEM("RECENT", recent);
+	PARSE_STATUS_ITEM("UNSEEN", unseen);
 	if (IMAP_HAS_CAPABILITY(client, IMAP_CAPABILITY_STATUS_SIZE)) {
-		str = strstr(tmp, "SIZE ");
-		if (str) {
-			str += STRLEN("SIZE ");
-			if (!strlen_zero(str)) {
-				mbox->size = (size_t) atol(str);
-			}
-		} else if (expect_full) {
-			client_warning("Failed to parse SIZE");
-		}
+		PARSE_STATUS_ITEM("SIZE", size);
 	}
+#undef PARSE_STATUS_ITEM
+}
+
+/* libetpan timeout handling, from LBBS mod_webmail.c */
+#define COMMAND_READ_LARGE_TIMEOUT 45
+
+/*!
+ * \brief Set the mailstream_low timeout, used to determine how long to wait for another line of the response.
+ * \note By default, this timeout appears to be about 15 seconds, but for some commands (e.g. SIZE/LIST), this can be too short.
+ * \param client
+ * \param timeout Timeout, in seconds
+ * \param[out] If provided, old timeout will be stored here.
+ */
+static void set_command_read_timeout(struct client *client, time_t timeout, time_t *restrict old_timeout)
+{
+	time_t current_timeout = mailstream_low_get_timeout(mailstream_get_low(client->imap->imap_stream));
+	if (old_timeout) {
+		*old_timeout = current_timeout;
+	}
+	if (current_timeout == timeout) {
+		return; /* No change */
+	}
+	client_debug(4, "Setting libetpan timeout to %ld", timeout);
+	return mailstream_low_set_timeout(mailstream_get_low(client->imap->imap_stream), timeout);
 }
 
 int client_status_command(struct client *client, struct mailbox *mbox, char *restrict list_status_resp)
@@ -329,6 +336,7 @@ int client_status_command(struct client *client, struct mailbox *mbox, char *res
 	struct mailimap_status_att_list *att_list;
 	struct mailimap_mailbox_data_status *status;
 	clistiter *cur;
+	time_t old_timeout;
 
 	/* If LIST-STATUS is supported, we might not need to make a STATUS request at all */
 	if (list_status_resp) {
@@ -374,7 +382,9 @@ int client_status_command(struct client *client, struct mailbox *mbox, char *res
 		log_mailimap_error(client, res, "Failed to construct STATUS");
 		goto cleanup;
 	}
+	set_command_read_timeout(client, COMMAND_READ_LARGE_TIMEOUT, &old_timeout);
 	res = mailimap_status(client->imap, mbox->name, att_list, &status);
+	set_command_read_timeout(client, old_timeout, NULL);
 
 	if (res != MAILIMAP_NO_ERROR) {
 		log_mailimap_error(client, res, "STATUS failed");
@@ -962,6 +972,7 @@ static int __client_list(struct client *client)
 	/* This is a single-threaded application, so there is no concurrency risk to making this static/global,
 	 * and it's probably better to put such a large buffer in the global segment rather than on the stack. */
 	static char list_status_buf[32768]; /* Hopefully big enough to fit the entire LIST-STATUS response */
+	time_t old_timeout;
 
 #ifdef TEST_MODE
 	if (test_cmp(client)) {
@@ -971,6 +982,7 @@ static int __client_list(struct client *client)
 
 	client_status("Querying mailbox list");
 
+	set_command_read_timeout(client, COMMAND_READ_LARGE_TIMEOUT, &old_timeout);
 	if (IMAP_HAS_CAPABILITY(client, IMAP_CAPABILITY_LIST_STATUS) && IMAP_HAS_CAPABILITY(client, IMAP_CAPABILITY_STATUS_SIZE)) {
 		struct list_status_cb cb = {
 			.buf = list_status_buf,
@@ -989,13 +1001,14 @@ static int __client_list(struct client *client)
 	} else {
 		res = mailimap_list(client->imap, "", "*", &imap_list);
 	}
+	set_command_read_timeout(client, old_timeout, NULL); /* Restore */
 
 	if (res != MAILIMAP_NO_ERROR) {
 		log_mailimap_error(client, res, "LIST failed");
 		return -1;
 	}
 	if (!clist_begin(imap_list)) {
-		client_error("List is empty?");
+		client_error("LIST response is empty?");
 		mailimap_list_result_free(imap_list);
 		return -1;
 	}
