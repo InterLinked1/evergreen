@@ -80,6 +80,89 @@ void client_destroy(struct client *client)
 	cleanup_mailboxes(client);
 }
 
+/* Copied from LBBS mod_webmail.c */
+#define S_IF(a) S_OR(a, "")
+#define S_OR(a, b) ({typeof(&((a)[0])) __x = (a); strlen_zero(__x) ? (b) : __x;})
+/* maildriver_strerror is like strerror for maildriver, but the codes are completely different for mailimap, so it isn't helpful */
+static const char *mailimap_strerror(int code)
+{
+	switch (code) {
+#define MAILIMAP_STRERROR_ITEM(c) case c: return #c
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_NO_ERROR);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_NO_ERROR_AUTHENTICATED);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_NO_ERROR_NON_AUTHENTICATED);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_BAD_STATE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_STREAM);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_PARSE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CONNECTION_REFUSED);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_MEMORY);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_FATAL);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_PROTOCOL);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_DONT_ACCEPT_CONNECTION);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_APPEND);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_NOOP);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_LOGOUT);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CAPABILITY);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CHECK);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CLOSE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_EXPUNGE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_COPY);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_UID_COPY);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_MOVE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_UID_MOVE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CREATE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_DELETE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_EXAMINE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_FETCH);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_UID_FETCH);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_LIST);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_LOGIN);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_LSUB);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_RENAME);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_SEARCH);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_UID_SEARCH);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_SELECT);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_STATUS);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_STORE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_UID_STORE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_SUBSCRIBE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_UNSUBSCRIBE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_STARTTLS);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_INVAL);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_EXTENSION);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_SASL);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_SSL);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_NEEDS_MORE_DATA);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CUSTOM_COMMAND);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CLIENTID);
+#undef MAILIMAP_STRERROR_ITEM
+	default: return "UNKNOWN";
+	}
+};
+
+#define log_mailimap_error(client, code, fmt, ...) log_mailimap(__FILE__, __LINE__, __func__, 1, client, code, fmt, ## __VA_ARGS__)
+#define log_mailimap_warning(client, code, fmt, ...) log_mailimap(__FILE__, __LINE__, __func__, 0, client, code, fmt, ## __VA_ARGS__)
+
+static void __attribute__ ((format (gnu_printf, 7, 8))) log_mailimap(const char *file, int lineno, const char *func, int error, struct client *client, int code, const char *fmt, ...)
+{
+	char buf[1024];
+	va_list ap;
+	int last_sent_tag = client->imap->imap_tag;
+	struct mailimap_response_info *r = client->imap->imap_response_info;
+
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+
+	if (r) {
+		/* Usually all the fields of r we print here are NULL, but we should have some tag and response info for debugging */
+		__client_log(client, error ? LOG_ERROR : LOG_WARNING, 0, file, lineno, func, "%s [%d: %s]: %d, %s/%s/%s/%s/%s\n",
+			buf, code, mailimap_strerror(code), last_sent_tag, S_IF(client->imap->imap_response), S_IF(r->rsp_alert), S_IF(r->rsp_parse), S_IF(r->rsp_atom), S_IF(r->rsp_value));
+	} else {
+		__client_log(client, error ? LOG_ERROR : LOG_WARNING, 0, file, lineno, func, "%s [%d: %s]\n", buf, code, mailimap_strerror(code));
+	}
+}
+
 static int client_load_capabilities(struct client *client)
 {
 	struct mailimap_capability_data *capdata;
@@ -132,7 +215,7 @@ int client_connect(struct client *client, struct config *config)
 		res = mailimap_socket_connect(imap, config->imap_hostname, config->imap_port);
 	}
 	if (MAILIMAP_ERROR(res)) {
-		client_error("Failed to establish IMAP session to %s:%d (%s)", config->imap_hostname, config->imap_port, maildriver_strerror(res));
+		log_mailimap_error(client, res, "Failed to establish IMAP session to %s:%d", config->imap_hostname, config->imap_port);
 		mailimap_free(client->imap);
 		return -1;
 	}
@@ -288,13 +371,13 @@ int client_status_command(struct client *client, struct mailbox *mbox, char *res
 	}
 
 	if (res) {
-		client_error("Failed to construct STATUS: %s", maildriver_strerror(res));
+		log_mailimap_error(client, res, "Failed to construct STATUS");
 		goto cleanup;
 	}
 	res = mailimap_status(client->imap, mbox->name, att_list, &status);
 
 	if (res != MAILIMAP_NO_ERROR) {
-		client_error("STATUS failed: %s", maildriver_strerror(res));
+		log_mailimap_error(client, res, "STATUS failed");
 		goto cleanup;
 	}
 	res = 0;
@@ -908,7 +991,7 @@ static int __client_list(struct client *client)
 	}
 
 	if (res != MAILIMAP_NO_ERROR) {
-		client_error("%s", maildriver_strerror(res));
+		log_mailimap_error(client, res, "LIST failed");
 		return -1;
 	}
 	if (!clist_begin(imap_list)) {
@@ -987,7 +1070,7 @@ static int __client_list(struct client *client)
 							mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
 							res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
 							if (res != MAILIMAP_NO_ERROR) {
-								client_error("Failed to calculate size of mailbox %s: %s", name, maildriver_strerror(res));
+								log_mailimap_error(client, res, "Failed to calculate size of mailbox %s", name);
 							} else {
 								clistiter *cur2;
 								/* Iterate over each message size */
@@ -1260,14 +1343,14 @@ int client_select(struct client *client, struct mailbox *mbox)
 	 */
 	res = client_status_command(client, mbox, NULL);
 	if (res != MAILIMAP_NO_ERROR) {
-		client_error("STATUS '%s' failed: %s", mbox->name, maildriver_strerror(res));
+		log_mailimap_error(client, res, "STATUS '%s' failed", mbox->name);
 		return -1;
 	}
 
 	/* Actually SELECT it */
 	res = mailimap_select(client->imap, mbox->name);
 	if (res != MAILIMAP_NO_ERROR) {
-		client_error("SELECT '%s' failed: %s", mbox->name, maildriver_strerror(res));
+		log_mailimap_error(client, res, "SELECT '%s' failed", mbox->name);
 		return -1;
 	}
 
@@ -2084,7 +2167,7 @@ static int __fetchlist(struct client *client, int start, int end)
 	mailimap_fetch_type_free(fetch_type);
 	/* Don't go to cleanup past this point, so no need to set fetch_type/set to NULL */
 	if (MAILIMAP_ERROR(res)) {
-		client_error("FETCH failed: %s", maildriver_strerror(res));
+		log_mailimap_error(client, res, "FETCH failed");
 		/* fetch_result and everything that went into it is already freed */
 		mailimap_set_free(set);
 		return -1;
@@ -2236,7 +2319,7 @@ static int client_fetch_postidle(struct client *client, int mbox_resync_flags)
 	mailimap_fetch_type_free(fetch_type);
 	/* Don't go to cleanup past this point, so no need to set fetch_type/set to NULL */
 	if (MAILIMAP_ERROR(res)) {
-		client_error("FETCH failed: %s", maildriver_strerror(res));
+		log_mailimap_error(client, res, "FETCH failed");
 		/* fetch_result and everything that went into it is already freed */
 		mailimap_set_free(set);
 		return -1;
@@ -2347,7 +2430,7 @@ int client_fetch(struct client *client, struct message *msg, struct message_data
 	/* Fetch by UID */
 	res = mailimap_uid_fetch(client->imap, set, fetch_type, &fetch_result);
 	if (MAILIMAP_ERROR(res)) {
-		client_warning("FETCH failed: %s", maildriver_strerror(res));
+		log_mailimap_warning(client, res, "FETCH failed");
 		goto cleanup;
 	}
 
@@ -2940,7 +3023,7 @@ int client_idle_start(struct client *client)
 
 		res = mailimap_idle(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
-			client_warning("Failed to start IDLE: %s", maildriver_strerror(res));
+			log_mailimap_warning(client, res, "Failed to start IDLE");
 			return -1;
 		}
 		client->idlestart = time(NULL);
@@ -2956,7 +3039,7 @@ int client_idle_stop(struct client *client)
 		client_debug(2, "Stopping IDLE...");
 		res = mailimap_idle_done(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
-			client_warning("Failed to stop IDLE: %s", maildriver_strerror(res));
+			log_mailimap_warning(client, res, "Failed to stop IDLE");
 			return -1;
 		}
 		client->idling = 0;
@@ -3487,7 +3570,7 @@ static int __handle_store(struct client *client, int sign, struct mailimap_set *
 
 	res = mailimap_uid_store(client->imap, set, att_flags);
 	if (res != MAILIMAP_NO_ERROR) {
-		client_error("UID STORE failed: %s", maildriver_strerror(res));
+		log_mailimap_error(client, res, "UID STORE failed");
 	}
 	/* Regardless of whether it failed or not, we're done */
 	mailimap_store_att_flags_free(att_flags);
@@ -3536,7 +3619,7 @@ int client_store(struct client *client, int sign, struct message *msg, int flags
 		res |= mailimap_flag_list_add(flag_list, mailimap_flag_new_answered());
 	}
 	if (res != MAILIMAP_NO_ERROR) {
-		client_warning("LIST add failed: %s", maildriver_strerror(res));
+		log_mailimap_warning(client, res, "LIST add failed");
 		mailimap_flag_list_free(flag_list);
 		mailimap_set_free(set);
 		return -1;
@@ -3581,7 +3664,7 @@ int client_store_keyword(struct client *client, int sign, struct message *msg, c
 	res |= mailimap_flag_list_add(flag_list, flag);
 
 	if (res != MAILIMAP_NO_ERROR) {
-		client_warning("LIST add failed: %s", maildriver_strerror(res));
+		log_mailimap_warning(client, res, "LIST add failed");
 		mailimap_flag_list_free(flag_list);
 		mailimap_set_free(set);
 		return -1;
@@ -3604,7 +3687,7 @@ int client_copy(struct client *client, struct message *msg, const char *newmbox)
 
 	res = mailimap_uid_copy(client->imap, set, newmbox);
 	if (res != MAILIMAP_NO_ERROR) {
-		client_warning("UID COPY failed: %s", maildriver_strerror(res));
+		log_mailimap_warning(client, res, "UID COPY failed");
 		return -1;
 	}
 	mailimap_set_free(set);
@@ -3627,14 +3710,14 @@ int client_move(struct client *client, struct message *msg, const char *newmbox)
 	if (client->capabilities & IMAP_CAPABILITY_MOVE) {
 		res = mailimap_uid_move(client->imap, set, newmbox);
 		if (res != MAILIMAP_NO_ERROR) {
-			client_warning("UID MOVE failed: %s", maildriver_strerror(res));
+			log_mailimap_warning(client, res, "UID MOVE failed");
 		}
 	} else {
 		/* You're kidding me... right?
 		 * Simulate MOVE using COPY + STORE \\Deleted */
 		res = mailimap_uid_copy(client->imap, set, newmbox);
 		if (res != MAILIMAP_NO_ERROR) {
-			client_warning("UID COPY failed: %s", maildriver_strerror(res));
+			log_mailimap_warning(client, res, "UID COPY failed");
 		} else {
 			client_store_deleted(client, msg);
 			/* XXX Should we do an EXPUNGE automatically? It could be dangerous! */
@@ -3669,7 +3752,7 @@ int client_append(struct client *client, const char *mailbox, int flags, const c
 	res = mailimap_append(client->imap, mailbox, flag_list, NULL, msg, len);
 	mailimap_flag_list_free(flag_list);
 	if (res != MAILIMAP_NO_ERROR) {
-		client_warning("APPEND failed: %s", maildriver_strerror(res));
+		log_mailimap_warning(client, res, "APPEND failed");
 		return -1;
 	} else {
 		/*! \todo If not doing NOTIFY, manually increment size/unread/total count of mailbox as appropriate */
