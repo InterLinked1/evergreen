@@ -18,7 +18,7 @@
  * - Stores \Answered and $Forwarded flags
  * - Save and resume drafts
  * - Message forwarding
- * - Mailbox creation and deletion
+ * - Mailbox creation, deletion, and renaming (moving)
  *
  * SMTP
  * - RFC 1870 SIZE declaration
@@ -44,7 +44,6 @@
  * - Honoring read receipts (configurable)
  * - Full attachment support (upload from disk, download/view attachments, forward message with its attachments)
  *      Ability to do disk operations (upload/download) needs to be disableable by a runtime flag, for restricted environments.
- * - Move (rename) mailboxes
  * - BURL IMAP support
  * - NNTP support?
  */
@@ -1046,6 +1045,11 @@ int show_help_menu(struct client *client, struct pollfd *pfds, enum help_types h
 
 		items[i++] = new_item("j", "Move message to Junk");
 		items[i++] = new_item("t", "Delete message (move to Trash)");
+
+		items[i++] = new_item("DEL", "Delete folder/message");
+		items[i++] = new_item("INS", "Create folder / message");
+
+		items[i++] = new_item("F12", "Rename (move) folder");
 	}
 
 	/* Message viewer options */
@@ -1086,7 +1090,7 @@ int show_help_menu(struct client *client, struct pollfd *pfds, enum help_types h
 
 	/* "Footnotes" */
 	if (help_types & HELP_MAIN) {
-		items[i++] = new_item(" ", "*Marked mailbox, for folder pane");
+		items[i++] = new_item(" *", "Marked mailbox, for folder pane");
 	}
 
 	assert(i < MAX_HELP_ITEMS);
@@ -1609,6 +1613,65 @@ static int client_menu(struct client *client)
 				client_set_status(client, "Select mailbox to show info");
 			}
 			break;
+		/* Avoid the use of F1-F5 keys, because they are not reliably detected/processed by all (most?) terminal emulators. F6-F12 are okay. */
+		case KEY_F(12):
+			if (FOCUSED(client, FOCUS_FOLDERS)) {
+				/* Rename message.
+				 * I would much have preferred to use F2 for this, but we can't (see comment above). */
+				int retval;
+				char newfolder[256];
+				char message[32];
+				int len;
+				ITEM *selection = current_item(client->folders.menu);
+				int selected_item = item_index(selection);
+				/* Default to the current, existing name.
+				 * The user will need to add or remove hierarchy delimiters manually if moving
+				 * outside of the current hierarchy level. */
+				len = snprintf(newfolder, sizeof(newfolder), "%s", client->mailboxes[selected_item].name);
+				if (client_idle_stop(client)) {
+					return -1;
+				}
+
+				/* Since the user interface doesn't make it obvious otherwise,
+				 * at this point remind the user what the hierarchy delimiter is,
+				 * since the user will need to be aware of it for moving the folder,
+				 * as opposed to a simple rename within the same subfolder. */
+				snprintf(message, sizeof(message), "Hierarchy delimiter is '%c'", client->delimiter);
+				client_set_status(client, message);
+				usleep(1500000); /* term_getline will wipe this out, so pause momentarily to give user time to read */
+
+				retval = term_getline(client, 60000, "Rename folder to", newfolder + len, newfolder, sizeof(newfolder));
+				switch (retval) {
+					case KEY_ESCAPE:
+						client_set_status(client, "RENAME operation cancelled");
+						break;
+					case KEY_RESIZE:
+						goto resize;
+					case 0:
+						client_set_status(client, "RENAME aborted due to timeout");
+						break;
+					case 1:
+						/* Got a folder name */
+						client_debug(1, "Renaming folder from '%s' to '%s'", client->mailboxes[selected_item].name, newfolder);
+						if (client_rename(client, &client->mailboxes[selected_item], newfolder)) {
+							client_set_status(client, "RENAME failed");
+							beep();
+							break;
+						}
+						client_set_status(client, "Folder renamed");
+						goto redraw;
+					case 2:
+						client_set_status(client, "Folder name too long!");
+						break;
+					default:
+						client_debug(1, "Unexpected return value %d", retval);
+						/* Fall through */
+					case -1:
+						return -1;
+				}
+				break;
+			}
+			break;
 		case KEY_IC:
 			if (FOCUSED(client, FOCUS_FOLDERS)) {
 				/* Create new folder */
@@ -1643,6 +1706,7 @@ static int client_menu(struct client *client)
 							beep();
 							break;
 						}
+						client_set_status(client, "Folder created");
 						goto redraw;
 					case 2:
 						client_set_status(client, "Folder name too long!");
@@ -1743,6 +1807,7 @@ static int client_menu(struct client *client)
 						beep();
 						break;
 					}
+					client_set_status(client, "Folder permanently deleted");
 				} else {
 					char new_mailbox[512];
 					const char *orig_name_suffix;
@@ -1766,6 +1831,7 @@ static int client_menu(struct client *client)
 						beep();
 						break;
 					}
+					client_set_status(client, "Folder moved to trash");
 				}
 				goto redraw;
 			}
