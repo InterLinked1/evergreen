@@ -225,6 +225,8 @@ struct attachment {
 	struct attachment *next;
 	struct attachment *prev;
 	const char *name;
+	unsigned int deleted:1;
+	unsigned int detached:1;
 	size_t size;
 	char data[];
 };

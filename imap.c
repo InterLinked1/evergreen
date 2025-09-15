@@ -2590,27 +2590,30 @@ static int fetch_mime_recurse(struct message_data *mdata, struct mailmime *mime,
 {
 	struct mailmime_fields *fields;
 	struct mailmime_content *content_type;
-	int text_plain = 0, text_html = 0;
-	int is_attachment = 0;
+	int is_attachment = 0, is_multipart = 0, is_text = 0, text_plain = 0, text_html = 0;
 	int encoding;
 	clistiter *cur;
 	clist *parameters;
 
 	level++;
 
-#ifdef DEBUG_MODE
+#ifdef DEBUG_MIME
+#define MIME_DEBUG(level, fmt, ...) client_debug(level, fmt, ## __VA_ARGS__)
+#else
+#define MIME_DEBUG(level, fmt, ...)
+#endif
+
 	switch (mime->mm_type) {
 		case MAILMIME_SINGLE:
-			client_debug(3, "Single part");
+			MIME_DEBUG(3, "Single part");
 			break;
 		case MAILMIME_MULTIPLE:
-			client_debug(3, "Multipart");
+			MIME_DEBUG(3, "Multipart");
 			break;
 		case MAILMIME_MESSAGE:
-			client_debug(3, "Message");
+			MIME_DEBUG(3, "Message");
 			break;
 	}
-#endif
 
 	fields = mime->mm_mime_fields;
 
@@ -2628,62 +2631,48 @@ static int fetch_mime_recurse(struct message_data *mdata, struct mailmime *mime,
 	parameters = content_type->ct_parameters;
 	switch (content_type->ct_type->tp_type) {
 		case MAILMIME_TYPE_DISCRETE_TYPE:
-#ifdef DEBUG_MODE
 			switch (content_type->ct_type->tp_data.tp_discrete_type->dt_type) {
 				case MAILMIME_DISCRETE_TYPE_TEXT:
-					client_debug(7, "[%d] text/%s", level, content_type->ct_subtype);
-					break;
-				case MAILMIME_DISCRETE_TYPE_IMAGE:
-					client_debug(7, "[%d] image/%s", level, content_type->ct_subtype);
-					break;
-				case MAILMIME_DISCRETE_TYPE_AUDIO:
-					client_debug(7, "[%d] audio/%s", level, content_type->ct_subtype);
-					break;
-				case MAILMIME_DISCRETE_TYPE_VIDEO:
-					client_debug(7, "[%d] video/%s", level, content_type->ct_subtype);
-					break;
-				case MAILMIME_DISCRETE_TYPE_APPLICATION:
-					client_debug(7, "[%d] application/%s", level, content_type->ct_subtype);
-					break;
-				case MAILMIME_DISCRETE_TYPE_EXTENSION:
-					client_debug(7, "[%d] %s/%s", level, content_type->ct_type->tp_data.tp_discrete_type->dt_extension, content_type->ct_subtype);
-					break;
-			}
-#endif
-			switch (content_type->ct_type->tp_data.tp_discrete_type->dt_type) {
-				case MAILMIME_DISCRETE_TYPE_TEXT:
+					MIME_DEBUG(7, "[%d] text/%s", level, content_type->ct_subtype);
+					is_text = 1;
 					if (!strcasecmp(content_type->ct_subtype, "plain")) {
 						text_plain = 1;
 					} else if (!strcasecmp(content_type->ct_subtype, "html")) {
 						text_html = 1;
 					}
 					break;
-				case MAILMIME_DISCRETE_TYPE_APPLICATION:
-					if (!strcmp(content_type->ct_subtype, "octet-stream")) {
-						is_attachment = 1;
-					}
+				case MAILMIME_DISCRETE_TYPE_IMAGE:
+					MIME_DEBUG(7, "[%d] image/%s", level, content_type->ct_subtype);
 					break;
-				default:
+				case MAILMIME_DISCRETE_TYPE_AUDIO:
+					MIME_DEBUG(7, "[%d] audio/%s", level, content_type->ct_subtype);
+					break;
+				case MAILMIME_DISCRETE_TYPE_VIDEO:
+					MIME_DEBUG(7, "[%d] video/%s", level, content_type->ct_subtype);
+					break;
+				case MAILMIME_DISCRETE_TYPE_APPLICATION:
+					MIME_DEBUG(7, "[%d] application/%s", level, content_type->ct_subtype);
+					break;
+				case MAILMIME_DISCRETE_TYPE_EXTENSION:
+					MIME_DEBUG(7, "[%d] %s/%s", level, content_type->ct_type->tp_data.tp_discrete_type->dt_extension, content_type->ct_subtype);
 					break;
 			}
 			break;
 		case MAILMIME_TYPE_COMPOSITE_TYPE:
-#ifdef DEBUG_MODE
 			switch (content_type->ct_type->tp_data.tp_composite_type->ct_type) {
 				case MAILMIME_COMPOSITE_TYPE_MESSAGE:
-					client_debug(7, "[%d] message/%s", level, content_type->ct_subtype);
+					MIME_DEBUG(7, "[%d] message/%s", level, content_type->ct_subtype);
 					break;
 				case MAILMIME_COMPOSITE_TYPE_MULTIPART:
-					client_debug(7, "[%d] multipart/%s", level, content_type->ct_subtype);
+					MIME_DEBUG(7, "[%d] multipart/%s", level, content_type->ct_subtype);
 					if (!strcasecmp(content_type->ct_subtype, "alternative")) {
 						text_html = 1;
 					}
 					break;
 				case MAILMIME_COMPOSITE_TYPE_EXTENSION:
-					client_debug(7, "[%d] %s/%s", level, content_type->ct_type->tp_data.tp_composite_type->ct_token, content_type->ct_subtype);
+					MIME_DEBUG(7, "[%d] %s/%s", level, content_type->ct_type->tp_data.tp_composite_type->ct_token, content_type->ct_subtype);
 					break;
 			}
-#endif
 			switch (content_type->ct_type->tp_data.tp_composite_type->ct_type) {
 				case MAILMIME_COMPOSITE_TYPE_MULTIPART:
 					if (!strcasecmp(content_type->ct_subtype, "alternative")) {
@@ -2695,27 +2684,103 @@ static int fetch_mime_recurse(struct message_data *mdata, struct mailmime *mime,
 			}
 	}
 
+	/* Attachment parsing code from LBBS mod_webmail.c: */
+
+	/* Iterate parameters of Content-Type header */
 	for (cur = clist_begin(parameters); cur; cur = clist_next(cur)) {
 		struct mailmime_parameter *param = clist_content(cur);
-		client_debug(7, ";%s=%s", param->pa_name, param->pa_value);
-		if (text_plain && !strcmp(param->pa_name, "format")) {
-			if (!strcmp(param->pa_value, "flowed")) {
-				mdata->pt_flowed = 1;
+		MIME_DEBUG(7, ";%s=%s\n", param->pa_name, param->pa_value);
+		if (text_plain && !strcmp(param->pa_name, "format") && !strcmp(param->pa_value, "flowed")) {
+			mdata->pt_flowed = 1;
+		}
+	}
+
+	/* If its content-type is multipart, it's not an attachment.
+	 * If its content-type is text, then you have to look at its content-disposition, which may be either inline or attachment.
+	 * If it has another content-type, then it is an attachment." */
+	if (!is_multipart) { /* Multipart can't be an attachment */
+		for (cur = clist_begin(fields->fld_list); cur; cur = clist_next(cur)) {
+			clistiter *cur2;
+			const char *name = NULL;
+			size_t size = 0;
+			struct mailmime_disposition *disposition;
+			struct mailmime_disposition_type *dsp_type;
+			struct mailmime_field *field = clist_content(cur);
+			if (field->fld_type != MAILMIME_FIELD_DISPOSITION) {
+				continue; /* Only care about Content-Disposition header */
 			}
-		} else if (!strcmp(param->pa_name, "name")) {
+			disposition = field->fld_data.fld_disposition;
+			dsp_type = disposition->dsp_type;
+			if (dsp_type->dsp_type != MAILMIME_DISPOSITION_TYPE_ATTACHMENT && is_text) {
+				/* Mozilla clients change the attachment to inline when deleted (but not when detached!)
+				 * But it's really an attachment, so treat it as such. */
+				if (strcmp(content_type->ct_subtype, "x-moz-deleted")) {
+					continue; /* If Content-Type is text and disposition is not attachment, it's inline (not an attachment) */
+				}
+			}
 			is_attachment = 1;
+			/* Extract info about the attachment, e.g. filename, size, etc. */
+			for (cur2 = clist_begin(disposition->dsp_parms); cur2; cur2 = clist_next(cur2)) {
+				struct mailmime_disposition_parm *param = clist_content(cur2);
+				if (param->pa_type == MAILMIME_DISPOSITION_PARM_FILENAME) {
+					name = param->pa_data.pa_filename;
+				} else if (param->pa_type == MAILMIME_DISPOSITION_PARM_SIZE) {
+					size = param->pa_data.pa_size;
+				}
+			}
 			/* If it's an attachment, add the name (and size) to the list */
-			if (1) {
-				const char *body2;
-				struct attachment *attachment = calloc(1, sizeof(struct attachment) + strlen(param->pa_value) + 1);
-				if (attachment) {
-					strcpy(attachment->data, param->pa_value); /* Safe */
-					attachment->name = attachment->data;
-					if (mime->mm_type == MAILMIME_SINGLE) {
-						/* Get the size of the attachment by reusing fetch_mime_recurse_single for that purpose. */
-						fetch_mime_recurse_single(&body2, &attachment->size, mime->mm_data.mm_single);
+			if (name) {
+				int attachment_detached = 0, attachment_deleted = 0;
+				is_attachment = 1;
+				if (!size && mime->mm_type == MAILMIME_SINGLE) {
+					const char *bodytmp; /* Don't care */
+					/* Get the size of the attachment by reusing fetch_mime_recurse_single for that purpose. */
+					fetch_mime_recurse_single(&bodytmp, &size, mime->mm_data.mm_single);
+				}
+				if (size && size < 1000) { /* Attachment is small enough it may have been detached... */
+					/* It is possible that the user has detached or deleted the attachment using a Mozilla client,
+					 * and this attachment is now a stub/placeholder for what used to exist.
+					 * When this happens, these headers will be siblings to Content-Disposition:
+					 *
+					 * X-Mozilla-Altered: [AttachmentDetached|AttachmentDeleted]; date=<detach/delete-date>
+					 * X-Mozilla-External-Attachment-URL: <detach-location> (detached messages only) */
+					const char *altered, *eoh;
+					size_t searchlen;
+#define EOH "\r\n\r\n"
+#define DETACH_ALTERED_HDR "X-Mozilla-Altered:"
+#define DETACH_NEWLOC_HDR "X-Mozilla-External-Attachment-URL:"
+					eoh = memmem(mime->mm_mime_start, mime->mm_length, EOH, STRLEN(EOH));
+					if (eoh) {
+						searchlen = (size_t) (eoh - mime->mm_mime_start);
+					} else {
+						searchlen = mime->mm_length;
+						eoh = mime->mm_mime_start + searchlen;
 					}
-					link_attachment(mdata, attachment);
+					altered = memmem(mime->mm_mime_start, searchlen, DETACH_ALTERED_HDR, STRLEN(DETACH_ALTERED_HDR));
+					/* We don't duplicate the headers here; however, that means we need to always check if we're in bounds. */
+					if (altered && (altered + STRLEN("X-Mozilla-Altered: AttachmentDetached; date=\"") < eoh) && !strncmp(altered, "X-Mozilla-Altered: Attachment", STRLEN("X-Mozilla-Altered: Attachment"))) {
+						altered += STRLEN("X-Mozilla-Altered: Attachment");
+						if (!strncmp(altered, "Detached", STRLEN("Detached"))) {
+							attachment_detached = 1;
+						} else if (!strncmp(altered, "Deleted", STRLEN("Deleted"))) {
+							attachment_deleted = 1;
+						} else {
+							/* It's safe to print at least the number of characters we previously expected. */
+							/* Can't use client_warning since we don't have client in this function */
+							client_debug(1, "BUG: Unexpected value for X-Mozilla-Altered: Attachment%.*s...", (int) STRLEN("Detached"), altered);
+						}
+					}
+				}
+				if (1) {
+					struct attachment *attachment = calloc(1, sizeof(struct attachment) + strlen(name) + 1);
+					if (attachment) {
+						strcpy(attachment->data, name); /* Safe */
+						attachment->name = attachment->data;
+						attachment->deleted = attachment_deleted;
+						attachment->detached = attachment_detached;
+						attachment->size = size;
+						link_attachment(mdata, attachment);
+					}
 				}
 			}
 		}

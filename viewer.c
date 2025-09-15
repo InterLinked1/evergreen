@@ -678,7 +678,8 @@ mknewpad:
 			char sizebuf[8];
 			wattron(pad, COLOR_PAIR(5));
 			format_size(attachment->size, sizebuf, sizeof(sizebuf));
-			atlen = (size_t) snprintf(atbuf, sizeof(atbuf), "  [%d] %6s %s\n", atnum + 1, sizebuf, attachment->name);
+			atlen = (size_t) snprintf(atbuf, sizeof(atbuf), "  [%d] %6s %s%s\n", atnum + 1, sizebuf, attachment->name,
+				attachment->deleted ? " (deleted)" : attachment->detached ? " (detached)" : "");
 			pad_add(pad, atbuf, atlen, 0);
 			atnum++;
 		} while ((attachment = attachment->next));
