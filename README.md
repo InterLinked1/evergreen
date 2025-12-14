@@ -37,7 +37,7 @@ In other words, I wanted a mail client that could be launched as a door from my 
 
 *evergreen* must be compiled from source, which requires only a few simple steps.
 
-On Debian-based systems, the required packages can be installed using `apt-get install -y git wget automake pkg-config libtool m4 build-essential libncurses-dev`
+On Debian-based systems, the required packages can be installed using `apt-get install -y git wget automake pkg-config libtool m4 build-essential libncurses-dev`. The `html2text` package is optional, though recommended, since it is required in order to display HTML emails.
 
 *evergreen* also requires a modified version of the `libetpan` library, which can be installed using this script: https://github.com/InterLinked1/lbbs/blob/master/scripts/libetpan.sh
 
