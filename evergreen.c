@@ -1050,6 +1050,7 @@ int show_help_menu(struct client *client, struct pollfd *pfds, enum help_types h
 		items[i++] = new_item("INS", "Create folder / message");
 
 		items[i++] = new_item("F12", "Rename (move) folder");
+		EMPTY_HELP_ITEM;
 	}
 
 	/* Message viewer options */

@@ -463,6 +463,8 @@ int convert_html_to_pt(struct client *client, struct message_data *mdata)
 				client_debug(1, "html2text failed: %s", strerror(WEXITSTATUS(status)));
 				if (WEXITSTATUS(status) == ENOENT) {
 					client_set_status_nout(client, "html2text not installed!");
+					doupdate();
+					sleep(2); /* The status bar will get overwritten with message metadata, so give time for user to read before it goes away */
 				}
 				res = -1;
 			}
