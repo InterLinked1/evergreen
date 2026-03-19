@@ -1122,7 +1122,7 @@ static int __client_list(struct client *client)
 
 	if (IMAP_HAS_CAPABILITY(client, IMAP_CAPABILITY_NOTIFY)) {
 		char cmd[2048];
-		char buf[sizeof(cmd) - 147];
+		char buf[sizeof(cmd) - 158];
 		int bytes = 0;
 		int otherinboxonly = numother > 10;
 
@@ -1155,11 +1155,11 @@ static int __client_list(struct client *client)
 		/* We just want notifications when something happens, having an untagged FETCH sent to us isn't that important.
 		 * We can wake up and do some work if really needed. */
 		if (bytes > 0 && (size_t) bytes <= sizeof(buf)) {
-			snprintf(cmd, sizeof(cmd), "NOTIFY SET (SELECTED-DELAYED (MessageNew MessageExpunge FlagChange)) %s(personal (MessageNew MessageExpunge)) (mailboxes%s (MessageNew MessageExpunge))",
+			snprintf(cmd, sizeof(cmd), "NOTIFY SET (SELECTED-DELAYED (MessageNew MessageExpunge FlagChange)) %s(personal (MessageNew MessageExpunge FlagChange)) (mailboxes%s (MessageNew MessageExpunge))",
 				numother <= OTHER_USERS_WATCHALL_THRESHOLD ? "(subtree \"Other Users\" (MessageNew MessageExpunge FlagChange))" : "",
 				buf);
 		} else {
-			snprintf(cmd, sizeof(cmd), "NOTIFY SET (SELECTED-DELAYED (MessageNew MessageExpunge FlagChange)) (personal (MessageNew MessageExpunge))%s", numother ? " (subtree \"Other Users\" (MessageNew MessageExpunge))" : "");
+			snprintf(cmd, sizeof(cmd), "NOTIFY SET (SELECTED-DELAYED (MessageNew MessageExpunge FlagChange)) (personal (MessageNew MessageExpunge FlagChange))%s", numother ? " (subtree \"Other Users\" (MessageNew MessageExpunge))" : "");
 		}
 		res = mailimap_custom_command(client->imap, cmd);
 		if (MAILIMAP_ERROR(res)) {
