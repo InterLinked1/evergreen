@@ -656,10 +656,56 @@ static int mkparent(struct client *client, char *restrict buf, size_t len, const
 	return 0;
 }
 
-static inline int mbox_name_cmp(const char *a, const char *b)
+static inline int char_rank(struct client *client, char c)
+{
+	/* We need to ensure that subfolders always immediately nest under their parents,
+	 * i.e. the correct ordering is test, test.sub, Test Item, not test, Test Item, test.sub */
+	if (c == client->delimiter) {
+		return 0; /* Hierarchy delimiter ranks first */
+	} else if (c == ' ') {
+		return 1;
+	} else if (isdigit(c)) {
+		return 2;
+	} else if (c >= 'a' && c <= 'z') {
+		return 3;
+	} else {
+		return 4;
+	}
+}
+
+static inline int mailbox_casecmp(struct client *client, const char *a, const char *b)
+{
+	size_t a_len, b_len, i, min_len;
+
+	/* Can't just use strcasecmp to compare, because although in general, we order case-sensitively,
+	 * folders are NOT case-sensitive, and we need to properly nest subfolders under their parents. */
+
+	a_len = strlen(a);
+	b_len = strlen(b);
+	min_len = a_len < b_len ? a_len : b_len;
+	for (i = 0; i < min_len; i++) {
+		int l_a, l_b;
+		int r_a, r_b;
+		l_a = tolower(a[i]);
+		l_b = tolower(b[i]);
+		if (l_a == l_b) { /* case-insensitively identical so far */
+			continue;
+		}
+		r_a = char_rank(client, l_a);
+		r_b = char_rank(client, l_b);
+		if (r_a != r_b) {
+			/* One of these has precedence, order accordingly */
+			return r_a - r_b;
+		}
+		return l_a < l_b ? -1 : 1;
+	}
+	return a_len - b_len; /* shorter first */
+}
+
+static inline int mbox_name_cmp(struct client *client, const char *a, const char *b)
 {
 	/*! \todo Make [ sort before alphabetic characters, for things like [Gmail] where that makes sense */
-	int res = strcasecmp(a, b);
+	int res = mailbox_casecmp(client, a, b);
 	if (res < 0) {
 		res = -1;
 	} else if (res > 0) {
@@ -729,10 +775,10 @@ static int __mailbox_name_cmp(struct client *client, struct mailbox_ref *a, stru
 				} else if (score_b < score_a) {
 					res = 1;
 				} else {
-					res = mbox_name_cmp(a->name, b->name);
+					res = mbox_name_cmp(client, a->name, b->name);
 				}
 			} else {
-				res = mbox_name_cmp(a->name, b->name);
+				res = mbox_name_cmp(client, a->name, b->name);
 			}
 		}
 	}
@@ -772,6 +818,15 @@ static int test_cmp(struct client *client)
 		{ "bb", 0 },
 		{ "cc", 0 },
 		{ "dd", 0 },
+		{ "apple", 0 },
+		{ "Banana", 0 },
+		{ "cherry", 0 },
+		{ "Tater Tots", 0 },
+		{ "test", 0 },
+		{ "test.sub", 0 },
+		{ "Test Items", 0 },
+		{ "Tofu", 0 },
+		{ "TV", 0 },
 		{ "Other Users", IMAP_MAILBOX_NOSELECT },
 		{ "Other Users.1aa", IMAP_MAILBOX_NOSELECT },
 		{ "Other Users.1aa.INBOX", 0 },
@@ -822,6 +877,15 @@ static int test_cmp(struct client *client)
 	FOLDER_SORT_ORDER_EXPECT("Other Users.1bb.INBOX", '>', "Other Users.1bb");
 	FOLDER_SORT_ORDER_EXPECT("Other Users.1bb", '>', "Other Users.1aa.foo");
 	FOLDER_SORT_ORDER_EXPECT("Other Users.2.[Gmail]", '<', "Other Users.2.[Gmail].Trash");
+	/* Folders should sort the same way as they do in Mozilla clients */
+	FOLDER_SORT_ORDER_EXPECT("apple", '<', "Banana");
+	FOLDER_SORT_ORDER_EXPECT("Banana", '<', "cherry");
+	FOLDER_SORT_ORDER_EXPECT("cherry", '<', "Tater Tots");
+	FOLDER_SORT_ORDER_EXPECT("Tater Tots", '<', "test");
+	FOLDER_SORT_ORDER_EXPECT("test", '<', "test.sub");
+	FOLDER_SORT_ORDER_EXPECT("test.sub", '<', "Test Items");
+	FOLDER_SORT_ORDER_EXPECT("Test Items", '<', "Tofu");
+	FOLDER_SORT_ORDER_EXPECT("Tofu", '<', "TV");
 
 	/* Currently, Other Users...INBOX is not expected to sort first within its sub-mailbox,
 	 * so we don't test that */
