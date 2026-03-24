@@ -15,7 +15,7 @@ jobs:
     name: Ubuntu 24.04
     steps:
      - name: Checkout
-       uses: actions/checkout@v4
+       uses: actions/checkout@v6
      # Runs a set of commands using the runners shell
      - name: Start build
        run: |
@@ -37,7 +37,7 @@ jobs:
     container: debian:12
     steps:
      - name: Checkout
-       uses: actions/checkout@v4
+       uses: actions/checkout@v6
      - name: Start build
        run: |
           apt-get update
@@ -55,7 +55,7 @@ jobs:
     container: debian:11
     steps:
      - name: Checkout
-       uses: actions/checkout@v4
+       uses: actions/checkout@v6
      - name: Start build
        run: |
           apt-get update
@@ -73,7 +73,7 @@ jobs:
     container: debian:10
     steps:
      - name: Checkout
-       uses: actions/checkout@v4
+       uses: actions/checkout@v6
      - name: Start build
        run: |
           sed -i 's|deb.debian.org/debian buster main|archive.debian.org/debian buster main|g' /etc/apt/sources.list
@@ -94,7 +94,7 @@ jobs:
     container: alpine:latest
     steps:
      - name: Checkout
-       uses: actions/checkout@v4
+       uses: actions/checkout@v6
      - name: Start build
        run: |
           apk update
@@ -113,7 +113,7 @@ jobs:
     container: archlinux:latest
     steps:
      - name: Checkout
-       uses: actions/checkout@v4
+       uses: actions/checkout@v6
      - name: Start build
        run: |
           pacman -Syu --noconfirm
@@ -130,7 +130,7 @@ jobs:
 #    runs-on: ubuntu-24.04
 #    name: FreeBSD
 #    steps:
-#      - uses: actions/checkout@v4
+#      - uses: actions/checkout@v6
 #      - name: Build LBBS
 #        uses: vmactions/freebsd-vm@v1
 #        with:
