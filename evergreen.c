@@ -2582,7 +2582,6 @@ static int process_option(struct config *config, const char *optname, const char
 			config->smtp_security = SECURITY_TLS;
 		} else if (!strcasecmp(val, "starttls")) {
 			config->smtp_security = SECURITY_STARTTLS;
-			return -1;
 		} else {
 			config->smtp_security = SECURITY_NONE;
 		}
