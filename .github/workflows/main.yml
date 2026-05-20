@@ -25,9 +25,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git wget automake pkg-config libtool m4 build-essential libncurses-dev
           cd ..
-          git clone https://github.com/InterLinked1/lbbs.git
-          cd lbbs
-          sudo scripts/libetpan.sh
+          git clone --depth 1 --recursive --shallow-submodule https://github.com/dinhvh/libetpan.git && cd libetpan
+          ./autogen.sh --with-poll > /dev/null || ./autogen.sh --with-poll
+          make -j$(nproc)
+          sudo make install
           cd ../evergreen
           make
           sudo make install
@@ -43,9 +44,10 @@ jobs:
           apt-get update
           apt-get install -y git wget automake pkg-config libtool m4 build-essential libncurses-dev
           cd ..
-          git clone https://github.com/InterLinked1/lbbs.git
-          cd lbbs
-          scripts/libetpan.sh
+          git clone --depth 1 --recursive --shallow-submodule https://github.com/dinhvh/libetpan.git && cd libetpan
+          ./autogen.sh --with-poll > /dev/null || ./autogen.sh --with-poll
+          make -j$(nproc)
+          make install
           cd ../evergreen
           make
           make install
@@ -61,9 +63,10 @@ jobs:
           apt-get update
           apt-get install -y git wget automake pkg-config libtool m4 build-essential libncurses-dev
           cd ..
-          git clone https://github.com/InterLinked1/lbbs.git
-          cd lbbs
-          scripts/libetpan.sh
+          git clone --depth 1 --recursive --shallow-submodule https://github.com/dinhvh/libetpan.git && cd libetpan
+          ./autogen.sh --with-poll > /dev/null || ./autogen.sh --with-poll
+          make -j$(nproc)
+          make install
           cd ../evergreen
           make
           make install
@@ -82,9 +85,10 @@ jobs:
           apt-get update
           apt-get install -y git wget automake pkg-config libtool m4 build-essential libncurses-dev
           cd ..
-          git clone https://github.com/InterLinked1/lbbs.git
-          cd lbbs
-          scripts/libetpan.sh
+          git clone --depth 1 --recursive --shallow-submodule https://github.com/dinhvh/libetpan.git && cd libetpan
+          ./autogen.sh --with-poll > /dev/null || ./autogen.sh --with-poll
+          make -j$(nproc)
+          make install
           cd ../evergreen
           make
           make install
@@ -100,10 +104,11 @@ jobs:
           apk update
           apk add git gcc make autoconf automake pkgconf libtool m4 build-base ncurses-dev
           cd ..
-          git clone https://github.com/InterLinked1/lbbs.git
-          cd lbbs
           mkdir /usr/local/src
-          scripts/libetpan.sh
+          git clone --depth 1 --recursive --shallow-submodule https://github.com/dinhvh/libetpan.git && cd libetpan
+          ./autogen.sh --with-poll > /dev/null || ./autogen.sh --with-poll
+          make -j$(nproc)
+          make install
           cd ../evergreen
           make
           make install
@@ -119,9 +124,10 @@ jobs:
           pacman -Syu --noconfirm
           pacman -Sy --noconfirm git make patch gawk gcc pkg-config autoconf automake m4 libtool libnewt wget
           cd ..
-          git clone https://github.com/InterLinked1/lbbs.git
-          cd lbbs
-          scripts/libetpan.sh
+          git clone --depth 1 --recursive --shallow-submodule https://github.com/dinhvh/libetpan.git && cd libetpan
+          ./autogen.sh --with-poll > /dev/null || ./autogen.sh --with-poll
+          make -j$(nproc)
+          make install
           cd ../evergreen
           make
           make install
@@ -137,10 +143,10 @@ jobs:
           run: |
             pkg install -y git gcc gmake autoconf automake pkgconf libtool m4 ncurses wget
             cd ..
-            git clone https://github.com/InterLinked1/lbbs.git
-            cd lbbs
-            mkdir /usr/local/src
-            scripts/libetpan.sh
+            git clone --depth 1 --recursive --shallow-submodule https://github.com/dinhvh/libetpan.git && cd libetpan
+            ./autogen.sh --with-poll > /dev/null || ./autogen.sh --with-poll
+            gmake -j$(nproc)
+            gmake install
             cd ../evergreen
             gmake
             gmake install

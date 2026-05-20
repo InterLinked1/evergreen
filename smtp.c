@@ -24,9 +24,6 @@
 
 #include <libetpan/libetpan.h>
 
-/* Forward declaration for libetpan, exported from src/data-types/base64.h */
-char *encode_base64(const char * in, int len);
-
 /* duplicated from rfc822.c, since clist is a typedef, so this cannot be in the header file */
 static void free_string_clist(clist *c)
 {
@@ -79,12 +76,25 @@ static int add_recipients(struct message_constructor *msgc, struct mailsmtp *smt
 			} else {
 				/* The spaces we trimmed must have been at the end */
 			}
+		} else {
+			recipient = strchr(recipient, '<');
+			if (!recipient) {
+				client_debug(3, "Malformed recipient?");
+				continue;
+			}
+			/* mailesmtp_rcpt does not want <> surrounding the address, strip em here */
+			*recipient++ = '\0';
+			tmp = strchr(recipient, '>');
+			if (!tmp) {
+				client_debug(3, "Malformed recipient?");
+				continue;
+			}
+			*tmp = '\0';
 		}
 		client_debug(3, "Adding recipient to transaction: %s", recipient);
 		dup = strdup(recipient);
 		if (!dup) {
 			SET_ERROR("Allocation failure");
-			free_string_clist(recipients);
 			return -1;
 		}
 		if (esmtp) {
@@ -94,7 +104,6 @@ static int add_recipients(struct message_constructor *msgc, struct mailsmtp *smt
 		}
 		if (res != MAILSMTP_NO_ERROR) {
 			SET_ERROR("RCPT %s: '%s'", dup, mailsmtp_strerror(res));
-			free_string_clist(recipients);
 			free(dup);
 			return -1;
 		}
@@ -184,63 +193,9 @@ int smtp_send(struct client *client, struct message_constructor *msgc, const cha
 			SET_ERROR("AUTH not supported");
 			goto cleanup;
 		}
-		/* Prefer PLAIN, if available, since it only requires a single roundtrip, rather than LOGIN, which requires 2 */
-		if (smtp->auth & MAILSMTP_AUTH_PLAIN) {
-			/* Builds of libetpan generally don't have USE_SASL defined, and,
-			 * without this, mailesmtp_auth functions won't work at all,
-			 * even for things like AUTH PLAIN and LOGIN.
-			 *
-			 * There is a mailsmtp_auth_login function in src/low-level/smtp/mailsmtp.c,
-			 * but it's #if 0'd, so we're not allowed to use it!
-			 *
-			 * Finally, to add insult to injury, the library will NOT allow applications
-			 * to authenticate themselves! There are mailsmtp_send_command and mailsmtp_send_command_private
-			 * functions in mailsmtp.c, but they are NOT exported.
-			 *
-			 * So, there are 3 ways that we could've used the library as is,
-			 * but clearly it's conspired against use of the library to authenticate,
-			 * so we do unfortunately require a modified library to properly expose the authentication functionality.
-			 * If a modified library is not present, this file will fail to compile.
-			 *
-			 * This is rather mindboggling, but we'll have to manually send the auth commands ourself,
-			 * as this is the most portable way. */
-			char *encoded;
-			char buf[256];
-			char fullcmd[256];
-			int buflen = snprintf(buf, sizeof(buf), "%c%s%c%s", '\0', client->config->smtp_username, '\0', client->config->smtp_password[0] ? client->config->smtp_password : "");
-			/* FYI, encode_base64 does not produce padded encodings. Some server implementations may take issue with that (but hopefully not) */
-			encoded = encode_base64(buf, buflen);
-			if (!encoded) {
-				SET_ERROR("Encoding error");
-				goto cleanup;
-			}
-			snprintf(fullcmd, sizeof(fullcmd), "AUTH PLAIN %s\r\n", encoded);
-			explicit_bzero(encoded, strlen(encoded));
-			free(encoded);
-			res = mailsmtp_send_command(smtp, fullcmd);
-			if (res != MAILSMTP_NO_ERROR) {
-				SMTP_ERROR("AUTH PLAIN");
-				goto cleanup;
-			}
-			explicit_bzero(fullcmd, sizeof(fullcmd));
-			res = mailsmtp_read_response(smtp);
-			if (res != MAILSMTP_NO_ERROR && smtp->response_code != 235) {
-				SMTP_ERROR("AUTH");
-				goto cleanup;
-			}
-		} else if (smtp->auth & MAILSMTP_AUTH_LOGIN) {
-			res = mailsmtp_send_command(smtp, "AUTH LOGIN\r\n");
-			if (res != MAILSMTP_NO_ERROR) {
-				SMTP_ERROR("AUTH LOGIN");
-				goto cleanup;
-			}
-			res = mailsmtp_read_response(smtp);
-			/* libetpan will return error code unknown for this one, so check manually */
-			if (smtp->response_code != 334) {
-				SMTP_ERROR("AUTH");
-				goto cleanup;
-			}
-			res = mailsmtp_auth_login(smtp, client->config->smtp_username, client->config->smtp_password[0] ? client->config->smtp_password : "");
+		/* CRAM-MD5 -> PLAIN -> LOGIN */
+		if (smtp->auth & (MAILSMTP_AUTH_PLAIN | MAILSMTP_AUTH_LOGIN)) {
+			res = mailsmtp_auth(smtp, client->config->smtp_username, client->config->smtp_password[0] ? client->config->smtp_password : "");
 			if (res != MAILSMTP_NO_ERROR) {
 				SMTP_ERROR("AUTH");
 				goto cleanup;
