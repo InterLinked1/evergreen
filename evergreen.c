@@ -166,7 +166,11 @@ void __attribute__ ((format (printf, 7, 8))) __client_log(struct client *client,
 		}
 		va_start(ap, fmt);
 #undef vsprintf
+/* Needed for Alpine Linux: */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
 		vsprintf(buf, fmt, ap); /* vsprintf is safe, vsnprintf is unnecessary here */
+#pragma GCC diagnostic pop
 		va_end(ap);
 	}
 
