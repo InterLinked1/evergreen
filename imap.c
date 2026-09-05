@@ -498,7 +498,20 @@ static void list_status_logger(mailstream *imap_stream, int log_type, const char
 		}
 	}
 
-	len = snprintf(cb->buf, cb->len, "%.*s", (int) size, str);
+	if (size >= cb->len) {
+		client_error("Truncation occured when processing LIST-STATUS response\n");
+		cb->len = 0;
+	}
+	if (!cb->len) {
+		client_error("Failed to append %lu bytes to LIST-STATUS response\n", size);
+		return;
+	}
+
+	/* Since we know we have enough room here:
+	 * a) we don't need to use snprintf
+	 * b) we can update len without worrying about underflow
+	 */
+	len = sprintf(cb->buf, "%.*s", (int) size, str); /* Safe */
 	cb->buf += len;
 	cb->len -= len;
 }
@@ -1035,7 +1048,7 @@ static int __client_list(struct client *client)
 	int numother = 0;
 	/* This is a single-threaded application, so there is no concurrency risk to making this static/global,
 	 * and it's probably better to put such a large buffer in the global segment rather than on the stack. */
-	static char list_status_buf[32768]; /* Hopefully big enough to fit the entire LIST-STATUS response */
+	static char list_status_buf[65536]; /* XXX Should be dynamically allocated/expanded as needed? Hopefully big enough to fit the entire LIST-STATUS response */
 	time_t old_timeout;
 
 #ifdef TEST_MODE
